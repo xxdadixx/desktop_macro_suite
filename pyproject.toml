@@ -1,0 +1,186 @@
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "desktop-macro-suite"
+version = "0.1.0"
+description = "Deterministic low-level desktop automation suite with computer vision triggers"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "Principal Automation Architect" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.7.0",
+    "pyside6>=6.7.0",
+    "opencv-python>=4.9.0.80",
+    "numpy>=1.26.4",
+    "pynput>=1.7.7",
+    "pyyaml>=6.0.1",
+    "pywin32>=306; sys_platform == 'win32'",
+    "typing-extensions>=4.11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "basedpyright>=1.10.0",
+    "ruff>=0.4.4",
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+# ----------------------------------------------------------------------------
+# basedpyright: Strict Static Type Checking Configuration
+# ----------------------------------------------------------------------------
+
+[tool.basedpyright]
+pythonVersion = "3.12"
+pythonPlatform = "Windows"
+typeCheckingMode = "strict"
+include = ["src", "tests"]
+exclude = [
+    "**/__pycache__",
+    ".venv",
+    "build",
+    "dist"
+]
+
+# Strict Mode Override Declarations
+reportMissingTypeStubs = "none"
+reportUnknownVariableType = "error"
+reportUnknownMemberType = "error"
+reportUnknownArgumentType = "error"
+reportUnknownParameterType = "error"
+reportMissingParameterType = "error"
+reportMissingTypeArgument = "error"
+reportAny = "error"
+reportExplicitAny = "error"
+reportUnusedImport = "error"
+reportUnusedVariable = "error"
+reportDuplicateImport = "error"
+reportUntypedFunctionDecorator = "error"
+reportUntypedClassDecorator = "error"
+reportUntypedBaseClass = "error"
+reportUntypedNamedTuple = "error"
+reportPrivateUsage = "error"
+reportConstantRedefinition = "error"
+reportIncompatibleMethodOverride = "error"
+reportIncompatibleVariableOverride = "error"
+reportOverlappingOverload = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+reportMatchNotExhaustive = "error"
+reportImplicitOverride = "error"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "src/ui"
+reportAny = false
+reportExplicitAny = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+
+# ----------------------------------------------------------------------------
+# ruff: Linting and Formatting Configuration
+# ----------------------------------------------------------------------------
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "F",      # Pyflakes
+    "E", "W", # pycodestyle
+    "C90",    # mccabe
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "YTT",    # flake8-2020
+    "ANN",    # flake8-annotations
+    "ASYNC",  # flake8-async
+    "S",      # flake8-bandit
+    "BLE",    # flake8-blind-except
+    "B",      # flake8-bugbear
+    "A",      # flake8-builtins
+    "COM",    # flake8-commas
+    "C4",     # flake8-comprehensions
+    "DTZ",    # flake8-datetimez
+    "T10",    # flake8-debugger
+    "EM",     # flake8-errmsg
+    "FA",     # flake8-future-annotations
+    "ISC",    # flake8-implicit-str-concat
+    "ICN",    # flake8-import-conventions
+    "LOG",    # flake8-logging
+    "G",      # flake8-logging-format
+    "PIE",    # flake8-pie
+    "T20",    # flake8-print
+    "PT",     # flake8-pytest-style
+    "Q",      # flake8-quotes
+    "RSE",    # flake8-raise
+    "RET",    # flake8-return
+    "SLF",    # flake8-self
+    "SLOT",   # flake8-slots
+    "SIM",    # flake8-simplify
+    "TID",    # flake8-tidy-imports
+    "TCH",    # flake8-type-checking
+    "ARG",    # flake8-unused-arguments
+    "PTH",    # flake8-use-pathlib
+    "ERA",    # eradicate
+    "PGH",    # pygrep-hooks
+    "PL",     # pylint
+    "TRY",    # tryceratops
+    "FLY",    # flynt
+    "PERF",   # perflint
+    "FURB",   # refurb
+    "RUF",    # ruff-specific rules
+]
+ignore = [
+    "COM812", # Conflicts with ruff formatter
+    "ISC001", # Conflicts with ruff formatter
+]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = false
+ignore-fully-untyped = false
+suppress-none-returning = false
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["src"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101",    # Allow assert statements in tests
+    "ANN201",  # Relax return type annotations for pytest fixtures and test functions
+    "PLR2004", # Allow magic numbers in test comparison assertions
+    "SLF001",  # Allow private attribute introspection during tests
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+line-ending = "lf"
+
+# ----------------------------------------------------------------------------
+# pytest: Async and Strict Assertion Testing
+# ----------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
