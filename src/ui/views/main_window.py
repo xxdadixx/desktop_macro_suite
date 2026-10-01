@@ -1,10 +1,11 @@
+# pyright: reportUntypedBaseClass=false, reportUntypedFunctionDecorator=false
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Final
 
 from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QAction, QIcon, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
     QMainWindow,
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.core.ast import CvTriggerAction, MacroSequence
+from src.core.ast import CvTriggerAction
 from src.core.serialization import MacroSerializer
 from src.core.types import Rect2D
 from src.ui.bridge import UIBridge
@@ -114,15 +115,17 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self._act_capture_roi)
 
     def _wire_signals(self) -> None:
-        self._timeline.action_selected.connect(
-            lambda row: self._inspector.inspect(row, self._model.get_action(row))
-        )
+        self._timeline.action_selected.connect(self._on_action_selected)
         self._inspector.action_updated.connect(self._model.update_action)
 
         self._bridge.recording_state_changed.connect(self._on_recording_changed)
         self._bridge.playback_state_changed.connect(self._on_playback_changed)
         self._bridge.telemetry_updated.connect(self._on_telemetry_updated)
         self._bridge.error_occurred.connect(self._on_error)
+
+    @Slot(int)
+    def _on_action_selected(self, row: int) -> None:
+        self._inspector.inspect(row, self._model.get_action(row))
 
     @Slot()
     def _on_new(self) -> None:

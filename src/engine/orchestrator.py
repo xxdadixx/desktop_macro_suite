@@ -17,6 +17,7 @@ from src.engine.playback_engine import MacroPlaybackEngine
 from src.engine.scheduler import MacroScheduler
 from src.platform import get_platform_provider
 from src.platform.base import BasePlatformProvider
+from src.vision.trigger import VisualTriggerEvaluator
 
 __all__: Final[list[str]] = ["MacroOrchestrator"]
 
@@ -28,6 +29,7 @@ class MacroOrchestrator:
         self,
         platform_provider: BasePlatformProvider | None = None,
         abort_vk_code: int = DEFAULT_ABORT_VK,
+        visual_evaluator: VisualTriggerEvaluator | None = None,
     ) -> None:
         self._platform: BasePlatformProvider = (
             platform_provider if platform_provider is not None else get_platform_provider()
@@ -41,9 +43,17 @@ class MacroOrchestrator:
         self._capture_engine: InputCaptureEngine = InputCaptureEngine(
             hook_manager=self._platform.hook_manager
         )
+        self._visual_evaluator: VisualTriggerEvaluator = (
+            visual_evaluator
+            if visual_evaluator is not None
+            else VisualTriggerEvaluator(
+                capture_provider=self._platform.screen_capture
+            )
+        )
         self._playback_engine: MacroPlaybackEngine = MacroPlaybackEngine(
             synthesizer=self._platform.synthesizer,
             cancellation_token=self._cancellation_token,
+            visual_evaluator=self._visual_evaluator,
         )
         self._scheduler: MacroScheduler = MacroScheduler(
             playback_engine=self._playback_engine,
@@ -86,6 +96,10 @@ class MacroOrchestrator:
     def is_playing(self) -> bool:
         with self._state_lock:
             return self._is_playing
+
+    @property
+    def visual_evaluator(self) -> VisualTriggerEvaluator:
+        return self._visual_evaluator
 
     def initialize(self) -> None:
         """Initializes low-level platform hooks, timer resolution, and the kill-switch."""

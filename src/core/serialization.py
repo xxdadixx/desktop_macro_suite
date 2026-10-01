@@ -2,13 +2,24 @@ from pathlib import Path
 from typing import Final, cast
 
 import yaml
-from pydantic import ValidationError
 
 from .ast import MacroSequence
 from .exceptions import SchemaVersionMismatchError, SerializationError
 
 CURRENT_SCHEMA_VERSION: Final[str] = "1.0.0"
 SUPPORTED_SCHEMA_VERSIONS: Final[frozenset[str]] = frozenset({CURRENT_SCHEMA_VERSION})
+
+__all__: Final[list[str]] = [
+    "CURRENT_SCHEMA_VERSION",
+    "SUPPORTED_SCHEMA_VERSIONS",
+    "MacroSerializer",
+    "load_macro_file",
+    "macro_from_json",
+    "macro_from_yaml",
+    "macro_to_json",
+    "macro_to_yaml",
+    "save_macro_file",
+]
 
 
 def _validate_schema_version(sequence: MacroSequence) -> None:
@@ -30,7 +41,7 @@ def macro_to_json(sequence: MacroSequence, *, indent: int = 2) -> str:
 def macro_from_json(json_content: str) -> MacroSequence:
     try:
         sequence = MacroSequence.model_validate_json(json_content)
-    except (ValidationError, ValueError) as err:
+    except ValueError as err:
         raise SerializationError(
             f"Failed to deserialize macro from JSON: {err}"
         ) from err
@@ -64,7 +75,7 @@ def macro_from_yaml(yaml_content: str) -> MacroSequence:
 
     try:
         sequence = MacroSequence.model_validate(raw_data)
-    except ValidationError as err:
+    except ValueError as err:
         raise SerializationError(f"Failed to validate macro from YAML: {err}") from err
 
     _validate_schema_version(sequence)
@@ -111,3 +122,31 @@ def load_macro_file(file_path: str | Path) -> MacroSequence:
     raise SerializationError(
         f"Unsupported file format '{extension}'. Use .json, .yaml, or .yml"
     )
+
+
+class MacroSerializer:
+    """Facade for MacroSequence serialization and filesystem persistence."""
+
+    @staticmethod
+    def to_json(sequence: MacroSequence, *, indent: int = 2) -> str:
+        return macro_to_json(sequence, indent=indent)
+
+    @staticmethod
+    def from_json(json_content: str) -> MacroSequence:
+        return macro_from_json(json_content)
+
+    @staticmethod
+    def to_yaml(sequence: MacroSequence) -> str:
+        return macro_to_yaml(sequence)
+
+    @staticmethod
+    def from_yaml(yaml_content: str) -> MacroSequence:
+        return macro_from_yaml(yaml_content)
+
+    @staticmethod
+    def save_to_file(sequence: MacroSequence, file_path: str | Path) -> None:
+        save_macro_file(sequence, file_path)
+
+    @staticmethod
+    def load_from_file(file_path: str | Path) -> MacroSequence:
+        return load_macro_file(file_path)

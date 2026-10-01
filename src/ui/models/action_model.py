@@ -1,4 +1,4 @@
-# pyright: reportAny=false, reportExplicitAny=false
+# pyright: reportAny=false, reportExplicitAny=false, reportUntypedBaseClass=false
 from __future__ import annotations
 
 from typing import Final

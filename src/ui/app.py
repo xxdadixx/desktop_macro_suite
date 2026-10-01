@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 from typing import Final
 
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 

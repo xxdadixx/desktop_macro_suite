@@ -109,6 +109,11 @@ _gdi32.DeleteObject.restype = wintypes.BOOL
 _gdi32.DeleteDC.argtypes = [wintypes.HDC]
 _gdi32.DeleteDC.restype = wintypes.BOOL
 
+_gdi32.GdiFlush.argtypes = []
+_gdi32.GdiFlush.restype = wintypes.BOOL
+
+_gdi_flush: Callable[[], int] = cast(Callable[[], int], _gdi32.GdiFlush)
+
 _get_desktop_window: Callable[[], int] = cast(
     Callable[[], int], _user32.GetDesktopWindow
 )
@@ -223,9 +228,12 @@ class Win32GdiCapture(FrameCaptureProtocol):
             if success == 0:
                 raise FrameCaptureError("BitBlt screen raster transfer failed")
 
+            _ = _gdi_flush()
+
             total_bytes: int = width * height * 4
-            raw_buffer: bytes = ctypes.string_at(bits_ptr.value, total_bytes)
-            bgra_array = np.frombuffer(raw_buffer, dtype=np.uint8).reshape((height, width, 4))
+            buffer_type = ctypes.c_uint8 * total_bytes
+            raw_array = buffer_type.from_address(bits_ptr.value)
+            bgra_array = np.frombuffer(raw_array, dtype=np.uint8).reshape((height, width, 4))
             bgr_array = np.ascontiguousarray(bgra_array[:, :, :3])
             return cast(ImageBuffer, bgr_array)
         finally:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import logging
 import random
-import time
 from typing import Final
 
 from src.core.ast import (
@@ -15,13 +15,16 @@ from src.core.ast import (
     MouseMoveAction,
     MouseScrollAction,
 )
-from src.core.exceptions import MacroTimeoutError
+from src.core.exceptions import ExecutionError
 from src.core.types import (
     CancellationTokenProtocol,
     InputSynthesizerProtocol,
     Milliseconds,
 )
 from src.engine.timing import PreciseTimer
+from src.vision.trigger import VisualTriggerEvaluator
+
+logger: logging.Logger = logging.getLogger(__name__)
 
 MOUSE_INTERPOLATION_STEP_MS: Final[float] = 5.0
 CV_POLL_INTERVAL_MS: Final[float] = 50.0
@@ -34,11 +37,21 @@ class MacroPlaybackEngine:
         self,
         synthesizer: InputSynthesizerProtocol,
         cancellation_token: CancellationTokenProtocol | None = None,
+        visual_evaluator: VisualTriggerEvaluator | None = None,
     ) -> None:
         self._synthesizer: InputSynthesizerProtocol = synthesizer
         self._token: CancellationTokenProtocol | None = cancellation_token
+        self._visual_evaluator: VisualTriggerEvaluator | None = visual_evaluator
         self._current_mouse_x: int = 0
         self._current_mouse_y: int = 0
+
+    @property
+    def visual_evaluator(self) -> VisualTriggerEvaluator | None:
+        return self._visual_evaluator
+
+    @visual_evaluator.setter
+    def visual_evaluator(self, evaluator: VisualTriggerEvaluator | None) -> None:
+        self._visual_evaluator = evaluator
 
     def play(self, sequence: MacroSequence, repeat_count: int = 1) -> None:
         """Executes the macro sequence. Set repeat_count <= 0 to loop indefinitely."""
@@ -51,7 +64,7 @@ class MacroPlaybackEngine:
             iteration += 1
 
     def execute_action(self, node: ActionNode) -> None:
-        """Evaluates and dispatches a single AST action node."""
+        """Evaluates and dispatches a single AST action node exhaustively."""
         self._check_cancellation()
 
         match node:
@@ -95,7 +108,7 @@ class MacroPlaybackEngine:
         )
         step_delay: Milliseconds = action.duration_ms / total_steps
 
-        for step in range(1, total_steps + 1):
+        for step in range(1, total_steps):
             self._check_cancellation()
             progress: float = step / total_steps
             intermediate_x: int = int(start_x + (target_x - start_x) * progress)
@@ -151,17 +164,21 @@ class MacroPlaybackEngine:
                     self.execute_action(child)
 
     def _execute_cv_trigger(self, action: CvTriggerAction) -> None:
-        start_time: float = time.monotonic()
-        timeout: float = action.timeout_seconds
+        if self._visual_evaluator is None:
+            raise ExecutionError(
+                f"Cannot execute visual trigger action '{action.id}': "
+                "VisualTriggerEvaluator is not initialized or injected."
+            )
 
-        while True:
-            self._check_cancellation()
-            elapsed: float = time.monotonic() - start_time
-            if elapsed >= timeout:
-                raise MacroTimeoutError(
-                    action_id=action.id,
-                    timeout_seconds=timeout,
-                )
+        logger.debug(
+            "Polling visual trigger for template '%s' (timeout: %.2fs, threshold: %.2f)",
+            action.template_path,
+            action.timeout_seconds,
+            action.confidence_threshold,
+        )
 
-            PreciseTimer.sleep_ms(CV_POLL_INTERVAL_MS, self._token)
-            break
+        _ = self._visual_evaluator.wait_for_trigger(
+            action=action,
+            poll_interval_ms=CV_POLL_INTERVAL_MS,
+            cancellation_token=self._token,
+        )

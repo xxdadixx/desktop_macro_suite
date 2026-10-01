@@ -1,3 +1,4 @@
+# pyright: reportUntypedBaseClass=false, reportUntypedFunctionDecorator=false
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,7 +31,7 @@ class UIBridge(QObject):
         super().__init__(parent)
         self._orchestrator: MacroOrchestrator = orchestrator
         self._vision_capture: VisionCapture = VisionCapture(
-            capture_provider=orchestrator.platform.frame_capture
+            capture_provider=orchestrator.platform.screen_capture
         )
 
     @property

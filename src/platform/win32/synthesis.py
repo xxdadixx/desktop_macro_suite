@@ -38,6 +38,7 @@ SM_CXSCREEN: Final[int] = 0
 SM_CYSCREEN: Final[int] = 1
 
 MAPVK_VK_TO_VSC: Final[int] = 0
+MAPVK_VK_TO_VSC_EX: Final[int] = 4
 
 
 class MOUSEINPUT(ctypes.Structure):
@@ -253,18 +254,25 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
         state: KeyState,
     ) -> None:
         if scan_code == 0 and vk_code != 0:
-            scan_code = _map_virtual_key(vk_code, MAPVK_VK_TO_VSC)
+            scan_code = _map_virtual_key(vk_code, MAPVK_VK_TO_VSC_EX)
 
-        base_flags: int = KEYEVENTF_SCANCODE
-        if (scan_code & 0xE000) == 0xE000:
-            base_flags |= KEYEVENTF_EXTENDEDKEY
+        use_scan_code: bool = scan_code != 0
+        base_flags: int = 0
+        effective_scan: int = 0
+        effective_vk: int = 0
 
-        effective_scan: int = scan_code & 0xFF
+        if use_scan_code:
+            base_flags |= KEYEVENTF_SCANCODE
+            if (scan_code & 0xE000) == 0xE000:
+                base_flags |= KEYEVENTF_EXTENDEDKEY
+            effective_scan = scan_code & 0xFF
+        else:
+            effective_vk = vk_code & 0xFF
 
         def create_key_event(flags: int) -> INPUT:
             inp = INPUT()
             inp.type = INPUT_KEYBOARD
-            inp.u.ki.wVk = 0
+            inp.u.ki.wVk = effective_vk
             inp.u.ki.wScan = effective_scan
             inp.u.ki.dwFlags = flags
             inp.u.ki.time = 0
