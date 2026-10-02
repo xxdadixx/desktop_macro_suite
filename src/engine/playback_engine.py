@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
 import logging
 import random
+import sys
 import time
 from typing import Final
 
@@ -17,9 +20,10 @@ from src.core.ast import (
     MouseScrollAction,
 )
 from src.core.enums import LoopType
-from src.core.exceptions import ExecutionError
+from src.core.exceptions import ExecutionError, MacroTimeoutError
 from src.core.types import (
     CancellationTokenProtocol,
+    ExecutionTelemetryCallback,
     InputSynthesizerProtocol,
     Milliseconds,
 )
@@ -30,6 +34,18 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 MOUSE_INTERPOLATION_STEP_MS: Final[float] = 5.0
 CV_POLL_INTERVAL_MS: Final[float] = 50.0
+
+
+def _query_system_cursor_pos() -> tuple[int, int]:
+    """Retrieves current operating system cursor coordinates via Win32 GetCursorPos."""
+    if sys.platform == "win32":
+        try:
+            point = wintypes.POINT()
+            if ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+                return int(point.x), int(point.y)
+        except Exception:
+            pass
+    return 0, 0
 
 
 class MacroPlaybackEngine:
@@ -46,6 +62,7 @@ class MacroPlaybackEngine:
         self._visual_evaluator: VisualTriggerEvaluator | None = visual_evaluator
         self._current_mouse_x: int = 0
         self._current_mouse_y: int = 0
+        self._sync_cursor_position()
 
     @property
     def visual_evaluator(self) -> VisualTriggerEvaluator | None:
@@ -55,19 +72,40 @@ class MacroPlaybackEngine:
     def visual_evaluator(self, evaluator: VisualTriggerEvaluator | None) -> None:
         self._visual_evaluator = evaluator
 
-    def play(self, sequence: MacroSequence, repeat_count: int = 1) -> None:
+    def _sync_cursor_position(self) -> None:
+        cx, cy = _query_system_cursor_pos()
+        self._current_mouse_x = cx
+        self._current_mouse_y = cy
+
+    def play(
+        self,
+        sequence: MacroSequence,
+        repeat_count: int = 1,
+        telemetry_callback: ExecutionTelemetryCallback | None = None,
+    ) -> None:
         """Executes the macro sequence. Set repeat_count <= 0 to loop indefinitely."""
+        self._sync_cursor_position()
         iteration: int = 0
         while repeat_count <= 0 or iteration < repeat_count:
             self._check_cancellation()
             for action in sequence.actions:
                 self._check_cancellation()
+                if not action.enabled:
+                    continue
+
+                start_epoch = time.monotonic()
                 self.execute_action(action)
+                if telemetry_callback is not None:
+                    elapsed_ms = (time.monotonic() - start_epoch) * 1000.0
+                    telemetry_callback(action.id, elapsed_ms)
+
             iteration += 1
 
     def execute_action(self, node: ActionNode) -> None:
         """Evaluates and dispatches a single AST action node exhaustively."""
         self._check_cancellation()
+        if not node.enabled:
+            return
 
         match node:
             case MouseMoveAction() as action:
@@ -173,6 +211,8 @@ class MacroPlaybackEngine:
                     self._check_cancellation()
                     for child in action.actions:
                         self.execute_action(child)
+                    if not action.actions:
+                        PreciseTimer.sleep_ms(1.0, self._token)
 
             case LoopType.WHILE_CV:
                 if self._visual_evaluator is None:
@@ -185,13 +225,21 @@ class MacroPlaybackEngine:
                     confidence_threshold=action.confidence_threshold,
                     timeout_seconds=action.timeout_seconds,
                 )
+                start_time = time.monotonic()
                 while True:
                     self._check_cancellation()
+                    if (time.monotonic() - start_time) >= action.timeout_seconds:
+                        raise MacroTimeoutError(action.id, action.timeout_seconds)
+
                     res = self._visual_evaluator.evaluate_once(cv_check)
                     if not res.found:
                         break
+
                     for child in action.actions:
                         self.execute_action(child)
+
+                    if not action.actions:
+                        PreciseTimer.sleep_ms(CV_POLL_INTERVAL_MS, self._token)
 
             case LoopType.UNTIL_CV:
                 if self._visual_evaluator is None:
@@ -204,13 +252,21 @@ class MacroPlaybackEngine:
                     confidence_threshold=action.confidence_threshold,
                     timeout_seconds=action.timeout_seconds,
                 )
+                start_time = time.monotonic()
                 while True:
                     self._check_cancellation()
+                    if (time.monotonic() - start_time) >= action.timeout_seconds:
+                        raise MacroTimeoutError(action.id, action.timeout_seconds)
+
                     res = self._visual_evaluator.evaluate_once(cv_check)
                     if res.found:
                         break
+
                     for child in action.actions:
                         self.execute_action(child)
+
+                    if not action.actions:
+                        PreciseTimer.sleep_ms(CV_POLL_INTERVAL_MS, self._token)
 
     def _execute_cv_trigger(self, action: CvTriggerAction) -> None:
         if self._visual_evaluator is None:

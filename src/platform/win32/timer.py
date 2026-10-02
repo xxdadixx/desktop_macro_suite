@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import ctypes
 from collections.abc import Callable
 import threading
@@ -29,7 +31,7 @@ class Win32TimerManager(HighResolutionTimerProtocol):
     """Manages system-wide timer interrupt resolution using Win32 timeBeginPeriod."""
 
     def __init__(self) -> None:
-        self._lock: threading.Lock = threading.Lock()
+        self._lock: threading.RLock = threading.RLock()
         self._active_resolution_ms: int | None = None
 
     @property
@@ -65,7 +67,7 @@ class Win32TimerManager(HighResolutionTimerProtocol):
             self._active_resolution_ms = None
 
     @override
-    def __enter__(self) -> "Win32TimerManager":
+    def __enter__(self) -> HighResolutionTimerProtocol:
         self.set_minimum_resolution(1)
         return self
 

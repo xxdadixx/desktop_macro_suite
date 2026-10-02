@@ -58,7 +58,7 @@ class KeyboardKeyAction(BaseAction):
 
 class DelayAction(BaseAction):
     action_type: Literal[ActionType.DELAY] = ActionType.DELAY
-    duration_ms: NonNegativeFloat
+    duration_ms: NonNegativeFloat = 0.0
     jitter_ms: NonNegativeFloat = 0.0
 
 

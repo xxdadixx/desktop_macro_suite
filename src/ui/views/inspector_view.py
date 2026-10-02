@@ -1,10 +1,11 @@
 # pyright: reportUntypedBaseClass=false
 from __future__ import annotations
 
-from typing import Final
+from enum import StrEnum
+from typing import Final, override
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QMouseEvent, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -35,7 +36,50 @@ from src.core.ast import (
 )
 from src.core.enums import ButtonState, KeyState, LoopType, MouseButton
 
-__all__: Final[list[str]] = ["ActionInspectorView"]
+__all__: Final[list[str]] = ["ActionInspectorView", "CoordinatePickButton"]
+
+
+def _coerce_enum[T: StrEnum](val: object, enum_cls: type[T]) -> T | None:
+    """Safely coerces Python enum or Qt-unboxed string variants into the concrete StrEnum type."""
+    if isinstance(val, enum_cls):
+        return val
+    if isinstance(val, str):
+        try:
+            return enum_cls(val)
+        except ValueError:
+            return None
+    return None
+
+
+class CoordinatePickButton(QPushButton):
+    """Action button that initiates coordinate drag-picking immediately upon mouse press."""
+
+    pick_requested: Signal = Signal()
+
+    def __init__(self, text: str = "🎯 Drag / Pick Screen Location", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #0277BD;"
+            "  color: #FFFFFF;"
+            "  font-weight: bold;"
+            "  padding: 6px 10px;"
+            "  border-radius: 4px;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: #0288D1;"
+            "}"
+            "QPushButton:pressed {"
+            "  background-color: #01579B;"
+            "}"
+        )
+        self.setToolTip("Click or drag directly onto the target desktop location (Ctrl+Shift+C)")
+
+    @override
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        super().mousePressEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.pick_requested.emit()
 
 
 class ActionInspectorView(QWidget):
@@ -44,6 +88,7 @@ class ActionInspectorView(QWidget):
     action_updated: Signal = Signal(int, object)
     action_created: Signal = Signal(object)
     request_cv_capture: Signal = Signal()
+    request_coordinate_pick: Signal = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -114,7 +159,6 @@ class ActionInspectorView(QWidget):
         intro.setStyleSheet("color: #B0BEC5; padding: 2px;")
         layout.addWidget(intro)
 
-        # Mouse Group
         mouse_box = QGroupBox("Mouse Actions", self._tool_tab)
         mouse_grid = QGridLayout(mouse_box)
         btn_move = QPushButton("🖱 Move Cursor")
@@ -128,7 +172,6 @@ class ActionInspectorView(QWidget):
         mouse_grid.addWidget(btn_scroll, 1, 0, 1, 2)
         layout.addWidget(mouse_box)
 
-        # Keyboard Group
         kb_box = QGroupBox("Keyboard Actions", self._tool_tab)
         kb_layout = QHBoxLayout(kb_box)
         btn_key = QPushButton("⌨ Key Press")
@@ -136,7 +179,6 @@ class ActionInspectorView(QWidget):
         kb_layout.addWidget(btn_key)
         layout.addWidget(kb_box)
 
-        # Timing Group
         timing_box = QGroupBox("Timing Actions", self._tool_tab)
         timing_layout = QHBoxLayout(timing_box)
         btn_delay = QPushButton("⏱ Delay / Pause")
@@ -144,7 +186,6 @@ class ActionInspectorView(QWidget):
         timing_layout.addWidget(btn_delay)
         layout.addWidget(timing_box)
 
-        # Loop Control Flow Group (All Coding Loops)
         loop_box = QGroupBox("Control Flow Loops", self._tool_tab)
         loop_grid = QGridLayout(loop_box)
         btn_loop_count = QPushButton("🔁 For (Count)")
@@ -163,7 +204,6 @@ class ActionInspectorView(QWidget):
         loop_grid.addWidget(btn_loop_cv, 1, 1)
         layout.addWidget(loop_box)
 
-        # Vision Group
         vision_box = QGroupBox("Computer Vision", self._tool_tab)
         vision_layout = QVBoxLayout(vision_box)
         btn_cv = QPushButton("👁 Grab CV Template Gate (Ctrl+G)")
@@ -176,7 +216,9 @@ class ActionInspectorView(QWidget):
         self._tabs.addTab(self._tool_tab, "➕ Action Library")
 
     def _create_mouse_move(self) -> None:
-        self.action_created.emit(MouseMoveAction(x=500, y=500, duration_ms=100.0, is_relative=False))
+        self.action_created.emit(
+            MouseMoveAction(x=500, y=500, duration_ms=0.0, is_relative=False)
+        )
 
     def _create_mouse_click(self) -> None:
         self.action_created.emit(MouseButtonAction(button=MouseButton.LEFT, state=ButtonState.CLICK))
@@ -188,7 +230,7 @@ class ActionInspectorView(QWidget):
         self.action_created.emit(KeyboardKeyAction(vk_code=13, scan_code=28, state=KeyState.KEY_PRESS, key_name="Enter"))
 
     def _create_delay(self) -> None:
-        self.action_created.emit(DelayAction(duration_ms=500.0, jitter_ms=0.0))
+        self.action_created.emit(DelayAction(duration_ms=0.0, jitter_ms=0.0))
 
     def _create_loop(self, loop_type: LoopType) -> None:
         loop_action = LoopContainerAction(
@@ -203,6 +245,9 @@ class ActionInspectorView(QWidget):
         self._page_move: QWidget = QWidget(self._stack)
         layout = QFormLayout(self._page_move)
 
+        self._move_pick_btn = CoordinatePickButton("🎯 Drag / Pick Target Position")
+        self._move_pick_btn.pick_requested.connect(self.request_coordinate_pick.emit)
+
         self._move_x_spin: QSpinBox = QSpinBox()
         self._move_x_spin.setRange(-32768, 32767)
         self._move_y_spin: QSpinBox = QSpinBox()
@@ -214,6 +259,7 @@ class ActionInspectorView(QWidget):
 
         self._move_relative_check: QCheckBox = QCheckBox("Is Relative")
 
+        layout.addRow("", self._move_pick_btn)
         layout.addRow("X:", self._move_x_spin)
         layout.addRow("Y:", self._move_y_spin)
         layout.addRow("Duration:", self._move_duration_spin)
@@ -232,6 +278,12 @@ class ActionInspectorView(QWidget):
         for state in ButtonState:
             self._btn_state_combo.addItem(state.value.title(), state)
 
+        self._btn_use_coords_check: QCheckBox = QCheckBox("Specify Target Coordinates")
+        self._btn_use_coords_check.toggled.connect(self._on_btn_coords_toggled)
+
+        self._btn_pick_btn = CoordinatePickButton("🎯 Drag / Pick Target Position")
+        self._btn_pick_btn.pick_requested.connect(self.request_coordinate_pick.emit)
+
         self._btn_x_spin: QSpinBox = QSpinBox()
         self._btn_x_spin.setRange(-32768, 32767)
         self._btn_y_spin: QSpinBox = QSpinBox()
@@ -239,9 +291,16 @@ class ActionInspectorView(QWidget):
 
         layout.addRow("Button:", self._btn_button_combo)
         layout.addRow("State:", self._btn_state_combo)
-        layout.addRow("X (Optional):", self._btn_x_spin)
-        layout.addRow("Y (Optional):", self._btn_y_spin)
+        layout.addRow("", self._btn_use_coords_check)
+        layout.addRow("", self._btn_pick_btn)
+        layout.addRow("X Coordinate:", self._btn_x_spin)
+        layout.addRow("Y Coordinate:", self._btn_y_spin)
         self._stack.addWidget(self._page_button)
+
+    def _on_btn_coords_toggled(self, checked: bool) -> None:
+        self._btn_x_spin.setEnabled(checked)
+        self._btn_y_spin.setEnabled(checked)
+        self._btn_pick_btn.setEnabled(checked)
 
     def _build_mouse_scroll_page(self) -> None:
         self._page_scroll: QWidget = QWidget(self._stack)
@@ -345,16 +404,16 @@ class ActionInspectorView(QWidget):
         self._stack.addWidget(self._page_loop)
 
     def _on_loop_type_changed(self) -> None:
-        selected_type = self._loop_type_combo.currentData()
+        selected_type = _coerce_enum(self._loop_type_combo.currentData(), LoopType)
         is_count = selected_type == LoopType.COUNT
         is_duration = selected_type == LoopType.DURATION
         is_cv = selected_type in (LoopType.WHILE_CV, LoopType.UNTIL_CV)
 
-        self._loop_iterations_spin.setVisible(is_count)
-        self._loop_duration_spin.setVisible(is_duration)
-        self._loop_template_edit.setVisible(is_cv)
-        self._loop_confidence_spin.setVisible(is_cv)
-        self._loop_timeout_spin.setVisible(is_cv)
+        self._loop_layout.setRowVisible(self._loop_iterations_spin, is_count)
+        self._loop_layout.setRowVisible(self._loop_duration_spin, is_duration)
+        self._loop_layout.setRowVisible(self._loop_template_edit, is_cv)
+        self._loop_layout.setRowVisible(self._loop_confidence_spin, is_cv)
+        self._loop_layout.setRowVisible(self._loop_timeout_spin, is_cv)
 
     def _bind_shortcuts(self) -> None:
         ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut
@@ -391,6 +450,11 @@ class ActionInspectorView(QWidget):
             case MouseButtonAction() as b:
                 self._btn_button_combo.setCurrentText(b.button.value.title())
                 self._btn_state_combo.setCurrentText(b.state.value.title())
+                has_coords = b.x is not None and b.y is not None
+                self._btn_use_coords_check.setChecked(has_coords)
+                self._btn_x_spin.setEnabled(has_coords)
+                self._btn_y_spin.setEnabled(has_coords)
+                self._btn_pick_btn.setEnabled(has_coords)
                 self._btn_x_spin.setValue(b.x if b.x is not None else 0)
                 self._btn_y_spin.setValue(b.y if b.y is not None else 0)
                 self._stack.setCurrentWidget(self._page_button)
@@ -421,16 +485,44 @@ class ActionInspectorView(QWidget):
                 self._stack.setCurrentWidget(self._page_cv)
 
             case LoopContainerAction() as lp:
-                idx = self._loop_type_combo.findData(lp.loop_type)
+                target_val = lp.loop_type.value
+                idx = -1
+                for i in range(self._loop_type_combo.count()):
+                    item_data = self._loop_type_combo.itemData(i)
+                    if item_data == lp.loop_type or item_data == target_val:
+                        idx = i
+                        break
                 if idx >= 0:
                     self._loop_type_combo.setCurrentIndex(idx)
+
                 self._loop_iterations_spin.setValue(lp.iterations)
                 self._loop_duration_spin.setValue(lp.duration_seconds)
                 self._loop_template_edit.setText(lp.template_path)
+                self._loop_template_edit.setPlaceholderText(
+                    "(Embedded Image)" if lp.image_base64 else "Path to template image file"
+                )
                 self._loop_confidence_spin.setValue(lp.confidence_threshold)
                 self._loop_timeout_spin.setValue(lp.timeout_seconds)
                 self._on_loop_type_changed()
                 self._stack.setCurrentWidget(self._page_loop)
+
+    def set_target_coordinates(self, x: int, y: int) -> None:
+        """Assigns picked coordinates directly into active action parameters and commits updates."""
+        if self._current_action is None:
+            return
+
+        if isinstance(self._current_action, MouseMoveAction):
+            self._move_x_spin.setValue(x)
+            self._move_y_spin.setValue(y)
+            self._on_save_clicked()
+        elif isinstance(self._current_action, MouseButtonAction):
+            self._btn_use_coords_check.setChecked(True)
+            self._btn_x_spin.setEnabled(True)
+            self._btn_y_spin.setEnabled(True)
+            self._btn_pick_btn.setEnabled(True)
+            self._btn_x_spin.setValue(x)
+            self._btn_y_spin.setValue(y)
+            self._on_save_clicked()
 
     def _on_save_clicked(self) -> None:
         if self._current_action is None or self._current_row < 0:
@@ -449,17 +541,18 @@ class ActionInspectorView(QWidget):
                     is_relative=self._move_relative_check.isChecked(),
                 )
             case MouseButtonAction() as b:
-                btn_item = self._btn_button_combo.currentData()
-                state_item = self._btn_state_combo.currentData()
-                if isinstance(btn_item, MouseButton) and isinstance(state_item, ButtonState):
+                btn_item = _coerce_enum(self._btn_button_combo.currentData(), MouseButton)
+                state_item = _coerce_enum(self._btn_state_combo.currentData(), ButtonState)
+                if btn_item is not None and state_item is not None:
+                    use_coords = self._btn_use_coords_check.isChecked()
                     updated = MouseButtonAction(
                         id=b.id,
                         description=b.description,
                         enabled=b.enabled,
                         button=btn_item,
                         state=state_item,
-                        x=self._btn_x_spin.value() if self._btn_x_spin.value() != 0 else None,
-                        y=self._btn_y_spin.value() if self._btn_y_spin.value() != 0 else None,
+                        x=self._btn_x_spin.value() if use_coords else None,
+                        y=self._btn_y_spin.value() if use_coords else None,
                     )
             case MouseScrollAction() as s:
                 updated = MouseScrollAction(
@@ -470,8 +563,8 @@ class ActionInspectorView(QWidget):
                     horizontal=self._scroll_horizontal_check.isChecked(),
                 )
             case KeyboardKeyAction() as k:
-                kstate_item = self._key_state_combo.currentData()
-                if isinstance(kstate_item, KeyState):
+                kstate_item = _coerce_enum(self._key_state_combo.currentData(), KeyState)
+                if kstate_item is not None:
                     updated = KeyboardKeyAction(
                         id=k.id,
                         description=k.description,
@@ -501,8 +594,8 @@ class ActionInspectorView(QWidget):
                     timeout_seconds=self._cv_timeout_spin.value(),
                 )
             case LoopContainerAction() as lp:
-                selected_type = self._loop_type_combo.currentData()
-                if isinstance(selected_type, LoopType):
+                selected_type = _coerce_enum(self._loop_type_combo.currentData(), LoopType)
+                if selected_type is not None:
                     updated = LoopContainerAction(
                         id=lp.id,
                         description=lp.description,

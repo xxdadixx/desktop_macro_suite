@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 
@@ -52,15 +53,18 @@ class MatchResult:
 
 
 class TemplateMatcher:
-    """Computer vision engine for template matching with in-memory bitmap caching."""
+    """Computer vision engine for template matching with pre-computed dual-buffer caching."""
 
     def __init__(self) -> None:
-        self._template_cache: dict[str, ImageBuffer] = {}
+        self._template_cache: dict[str, tuple[ImageBuffer, ImageBuffer]] = {}
 
-    def load_template(self, template_path: str | Path) -> ImageBuffer:
-        """Loads and caches a template image from disk as a contiguous BGR buffer."""
+    def _hash_payload(self, payload: str) -> str:
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def load_template(self, template_path: str | Path) -> tuple[ImageBuffer, ImageBuffer]:
+        """Loads a template image from disk, caching both BGR and Grayscale representations."""
         path_str: str = str(Path(template_path).resolve())
-        cached: ImageBuffer | None = self._template_cache.get(path_str)
+        cached = self._template_cache.get(path_str)
         if cached is not None:
             return cached
 
@@ -68,21 +72,24 @@ class TemplateMatcher:
         if image is None:
             raise FileNotFoundError(f"Failed to load template image at '{path_str}'")
 
-        buffer: ImageBuffer = np.ascontiguousarray(image)
-        self._template_cache[path_str] = buffer
-        return buffer
+        bgr_buf: ImageBuffer = np.ascontiguousarray(image)
+        gray_buf: ImageBuffer = np.ascontiguousarray(cv2.cvtColor(bgr_buf, CV_COLOR_BGR2GRAY))
+        entry = (bgr_buf, gray_buf)
+        self._template_cache[path_str] = entry
+        return entry
 
     def clear_cache(self) -> None:
         """Flushes all pre-loaded template images from memory."""
         self._template_cache.clear()
 
-    def load_from_base64(self, b64_data: str) -> ImageBuffer:
-        """Decodes a Base64 PNG string into an in-memory BGR ImageBuffer."""
+    def load_from_base64(self, b64_data: str) -> tuple[ImageBuffer, ImageBuffer]:
+        """Decodes a Base64 string, caching both BGR and Grayscale representations."""
         cleaned_b64: str = b64_data.strip()
         if not cleaned_b64:
             raise ValueError("Base64 template data cannot be empty.")
 
-        cached: ImageBuffer | None = self._template_cache.get(cleaned_b64)
+        cache_key = self._hash_payload(cleaned_b64)
+        cached = self._template_cache.get(cache_key)
         if cached is not None:
             return cached
 
@@ -95,9 +102,11 @@ class TemplateMatcher:
         if decoded is None:
             raise ValueError("Failed to decode in-memory template image from Base64")
 
-        buffer: ImageBuffer = np.ascontiguousarray(decoded)
-        self._template_cache[cleaned_b64] = buffer
-        return buffer
+        bgr_buf: ImageBuffer = np.ascontiguousarray(decoded)
+        gray_buf: ImageBuffer = np.ascontiguousarray(cv2.cvtColor(bgr_buf, CV_COLOR_BGR2GRAY))
+        entry = (bgr_buf, gray_buf)
+        self._template_cache[cache_key] = entry
+        return entry
 
     def find(
         self,
@@ -106,31 +115,38 @@ class TemplateMatcher:
         threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
     ) -> MatchResult:
         """Searches for needle template within haystack image buffer."""
-        template_buffer: ImageBuffer
+        template_gray: ImageBuffer
+        template_w: int
+        template_h: int
+
         if isinstance(template, Path):
-            template_buffer = self.load_template(template)
+            _, template_gray = self.load_template(template)
+            template_h, template_w = int(template_gray.shape[0]), int(template_gray.shape[1])
         elif isinstance(template, str):
             clean_str: str = template.strip()
             if not clean_str:
                 raise ValueError("Template target identifier or Base64 payload cannot be empty.")
 
             if clean_str.startswith("iVBORw0KGgo") or len(clean_str) > 260:
-                template_buffer = self.load_from_base64(clean_str)
+                _, template_gray = self.load_from_base64(clean_str)
             else:
                 try:
                     if Path(clean_str).is_file():
-                        template_buffer = self.load_template(clean_str)
+                        _, template_gray = self.load_template(clean_str)
                     else:
-                        template_buffer = self.load_from_base64(clean_str)
+                        _, template_gray = self.load_from_base64(clean_str)
                 except OSError:
-                    template_buffer = self.load_from_base64(clean_str)
+                    _, template_gray = self.load_from_base64(clean_str)
+            template_h, template_w = int(template_gray.shape[0]), int(template_gray.shape[1])
         else:
-            template_buffer = template
+            if template.ndim == 3:
+                template_gray = cv2.cvtColor(template, CV_COLOR_BGR2GRAY)
+            else:
+                template_gray = template
+            template_h, template_w = int(template.shape[0]), int(template.shape[1])
 
         haystack_h: int = int(haystack.shape[0])
         haystack_w: int = int(haystack.shape[1])
-        template_h: int = int(template_buffer.shape[0])
-        template_w: int = int(template_buffer.shape[1])
 
         if template_w > haystack_w or template_h > haystack_h:
             return MatchResult(found=False, confidence=0.0)
@@ -139,11 +155,6 @@ class TemplateMatcher:
             cv2.cvtColor(haystack, CV_COLOR_BGR2GRAY)
             if haystack.ndim == 3
             else haystack
-        )
-        template_gray: ImageBuffer = (
-            cv2.cvtColor(template_buffer, CV_COLOR_BGR2GRAY)
-            if template_buffer.ndim == 3
-            else template_buffer
         )
 
         match_matrix: object = cv2.matchTemplate(

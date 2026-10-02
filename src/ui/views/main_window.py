@@ -26,10 +26,11 @@ from src.core.ast import (
     MouseScrollAction,
 )
 from src.core.serialization import MacroSerializer
-from src.core.types import Rect2D
+from src.core.types import Point2D, Rect2D
 from src.ui.bridge import UIBridge
 from src.ui.models.action_model import ActionSequenceModel
 from src.ui.models.telemetry_model import PlaybackTelemetry
+from src.ui.views.coordinate_picker import CoordinatePickerOverlay
 from src.ui.views.inspector_view import ActionInspectorView
 from src.ui.views.roi_selector import RoiSelectorOverlay
 from src.ui.views.timeline_view import TimelineView
@@ -65,9 +66,12 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 4)
         self.setCentralWidget(splitter)
 
-        # ROI Selector Tool Overlay
+        # Screen Overlays (ROI Cropper & Coordinate Crosshair Dropper)
         self._roi_selector: RoiSelectorOverlay = RoiSelectorOverlay()
         self._roi_selector.roi_selected.connect(self._on_roi_captured)
+
+        self._coord_picker: CoordinatePickerOverlay = CoordinatePickerOverlay()
+        self._coord_picker.coordinate_selected.connect(self._on_coordinate_captured)
 
         # Status Bar
         self._status_bar: QStatusBar = QStatusBar(self)
@@ -128,23 +132,56 @@ class MainWindow(QMainWindow):
         self._act_stop.triggered.connect(self._bridge.abort)
         toolbar.addAction(self._act_stop)
 
-        # Window-wide shortcut for CV Template capture (Ctrl+G and F7)
+        # Global Hotkey for CV Template capture (Ctrl+G, F7)
         self._act_capture_roi: QAction = QAction("Grab CV Template", self)
         self._act_capture_roi.setShortcuts([QKeySequence("Ctrl+G"), QKeySequence("F7")])
         self._act_capture_roi.setToolTip("Capture Region of Interest for visual template gate (Ctrl+G / F7)")
         self._act_capture_roi.triggered.connect(self._roi_selector.start_selection)
         self.addAction(self._act_capture_roi)
 
+        # Global Hotkey for Coordinate Drag/Pick (Ctrl+Shift+C, F8)
+        self._act_pick_coord: QAction = QAction("Pick Desktop Coordinate", self)
+        self._act_pick_coord.setShortcuts([QKeySequence("Ctrl+Shift+C"), QKeySequence("F8")])
+        self._act_pick_coord.setToolTip("Drag or click crosshair to set action coordinates (Ctrl+Shift+C / F8)")
+        self._act_pick_coord.triggered.connect(self._coord_picker.start_selection)
+        self.addAction(self._act_pick_coord)
+
     def _wire_signals(self) -> None:
         self._timeline.action_selected.connect(self._on_action_selected)
-        self._inspector.action_updated.connect(self._model.update_action)
+        self._timeline.status_message_requested.connect(self._status_bar.showMessage)
+
+        self._inspector.action_updated.connect(self._on_action_updated)
         self._inspector.action_created.connect(self._on_action_created)
         self._inspector.request_cv_capture.connect(self._roi_selector.start_selection)
+        self._inspector.request_coordinate_pick.connect(self._coord_picker.start_selection)
 
         self._bridge.recording_state_changed.connect(self._on_recording_changed)
         self._bridge.playback_state_changed.connect(self._on_playback_changed)
         self._bridge.telemetry_updated.connect(self._on_telemetry_updated)
         self._bridge.error_occurred.connect(self._on_error)
+
+    @Slot(int, object)
+    def _on_action_updated(self, row: int, updated: object) -> None:
+        if isinstance(
+            updated,
+            (
+                MouseMoveAction,
+                MouseButtonAction,
+                MouseScrollAction,
+                KeyboardKeyAction,
+                DelayAction,
+                CvTriggerAction,
+                LoopContainerAction,
+            ),
+        ):
+            if self._model.update_action(row, updated):
+                new_row = self._model.find_row_by_id(updated.id)
+                if new_row >= 0:
+                    self._timeline.select_row(new_row)
+                    self._inspector.inspect(new_row, updated)
+                self._status_bar.showMessage(
+                    f"Updated action #{new_row + 1 if new_row >= 0 else row + 1} ({updated.action_type.value})."
+                )
 
     @Slot(int)
     def _on_action_selected(self, row: int) -> None:
@@ -177,7 +214,7 @@ class MainWindow(QMainWindow):
         self._current_file_path = None
         self._timeline.clear_selection()
         self._inspector.inspect(-1, None)
-        self._inspector.set_active_tab(1)  # Focus Action Library
+        self._inspector.set_active_tab(1)
         self.setWindowTitle("Untitled Sequence - Desktop Automation Suite")
         self._status_bar.showMessage("New sequence created. Add actions from the Library on the right.")
 
@@ -284,3 +321,8 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:
             QMessageBox.critical(self, "Template Error", f"Failed to grab template: {e}")
+
+    @Slot(Point2D)
+    def _on_coordinate_captured(self, point: Point2D) -> None:
+        self._inspector.set_target_coordinates(point.x, point.y)
+        self._status_bar.showMessage(f"Target coordinates set to ({point.x}, {point.y}).")
