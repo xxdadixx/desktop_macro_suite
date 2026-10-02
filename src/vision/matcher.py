@@ -127,16 +127,18 @@ class TemplateMatcher:
             if not clean_str:
                 raise ValueError("Template target identifier or Base64 payload cannot be empty.")
 
-            if clean_str.startswith("iVBORw0KGgo") or len(clean_str) > 260:
+            # Explicit disambiguation: test filesystem resolution before Base64 fallback
+            path_candidate = Path(clean_str)
+            if path_candidate.is_file():
+                _, template_gray = self.load_template(path_candidate)
+            elif clean_str.startswith("iVBORw0KGgo") or (len(clean_str) > 260 and "/" not in clean_str and "\\" not in clean_str):
                 _, template_gray = self.load_from_base64(clean_str)
             else:
-                try:
-                    if Path(clean_str).is_file():
-                        _, template_gray = self.load_template(clean_str)
-                    else:
-                        _, template_gray = self.load_from_base64(clean_str)
-                except OSError:
-                    _, template_gray = self.load_from_base64(clean_str)
+                # If path candidate does not exist and doesn't match base64 characteristics, fail explicitly
+                if any(sep in clean_str for sep in ("/", "\\", ".")):
+                    raise FileNotFoundError(f"Template image file not found at '{clean_str}'")
+                _, template_gray = self.load_from_base64(clean_str)
+
             template_h, template_w = int(template_gray.shape[0]), int(template_gray.shape[1])
         else:
             if template.ndim == 3:

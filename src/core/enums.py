@@ -59,3 +59,17 @@ class ExecutionState(StrEnum):
     PLAYING = "playing"
     PAUSED = "paused"
     ABORTED = "aborted"
+
+@unique
+class CvFailurePolicy(StrEnum):
+    ABORT = "abort"        # Assert / Gate: Raise MacroTimeoutError on failure
+    SKIP = "skip"          # If-Condition: Skip execution and continue smoothly
+    BREAK_LOOP = "break"   # Loop Control: Break enclosing loop if match fails
+
+@unique
+class CvMouseAction(StrEnum):
+    NONE = "none"
+    MOVE_ONLY = "move_only"
+    CLICK = "click"
+    DOUBLE_CLICK = "double_click"
+    RIGHT_CLICK = "right_click"

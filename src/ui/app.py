@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 import sys
 from typing import Final
 
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
+from src.core.logging_config import setup_logging
 from src.engine.orchestrator import MacroOrchestrator
 from src.ui.bridge import UIBridge
 from src.ui.models.action_model import ActionSequenceModel
@@ -33,7 +36,12 @@ def _apply_dark_theme(app: QApplication) -> None:
 
 
 def run_app() -> int:
-    """Initializes the Qt application runtime, orchestration core, and primary view."""
+    """Initializes logging, Qt application runtime, orchestration core, and primary view."""
+    # Initialize logging subsystem before spawning application components
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    setup_logging(log_level=logging.INFO, log_file_path=log_dir / "desktop_macro_suite.log")
+
     app: QApplication = QApplication(sys.argv)
     _apply_dark_theme(app)
 

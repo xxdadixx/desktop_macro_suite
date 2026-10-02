@@ -1,0 +1,43 @@
+18:56:33.404 | INFO    | desktop_macro_suite | Logging initialized at level INFO.
+18:56:33.436 | INFO    | src.engine.orchestrator | Initializing MacroOrchestrator subsystems (Win32PlatformProvider)...
+18:56:33.437 | INFO    | src.engine.orchestrator | MacroOrchestrator initialization complete. Emergency Kill-Switch active (F12).
+18:58:38.503 | INFO    | src.engine.orchestrator | Playback background worker spawned for sequence 'Untitled Sequence'.
+18:58:38.503 | INFO    | src.engine.playback_engine | Starting execution of 'Untitled Sequence' [1 actions, 1 iteration(s)]
+18:58:38.503 | INFO    | src.engine.playback_engine | --- Beginning iteration 1/1 ---
+18:58:38.503 | INFO    | src.engine.playback_engine | Step [1/1] Executing LOOP_CONTAINER (ID: 5f2ab6fd)
+18:58:38.504 | INFO    | src.engine.playback_engine | Entering Loop block '5f2ab6fd' (type=count, child_actions=4)
+18:58:38.512 | INFO    | src.engine.playback_engine | Evaluating visual condition [in-memory embedded image] (policy=skip, comparison=appears, threshold=0.80, timeout=10.0s)
+18:58:38.788 | INFO    | src.engine.playback_engine | Visual target matched! Confidence: 1.00 (center: (2500, 338), offset: [+0, +0] -> target: (2500, 338))
+18:58:38.789 | INFO    | src.engine.playback_engine | Executing delay: 1000.0ms
+18:58:39.789 | INFO    | src.engine.playback_engine | Evaluating visual condition [in-memory embedded image] (policy=skip, comparison=appears, threshold=0.80, timeout=10.0s)
+18:58:50.009 | INFO    | src.engine.playback_engine | Visual target matched! Confidence: 1.00 (center: (2584, 337), offset: [+0, +0] -> target: (2584, 337))
+18:58:50.010 | INFO    | src.engine.playback_engine | Executing delay: 1000.0ms
+18:58:51.011 | INFO    | src.engine.playback_engine | Evaluating visual condition [in-memory embedded image] (policy=skip, comparison=appears, threshold=0.80, timeout=10.0s)
+18:58:51.281 | INFO    | src.engine.playback_engine | Visual target matched! Confidence: 1.00 (center: (2500, 338), offset: [+0, +0] -> target: (2500, 338))
+18:58:51.282 | INFO    | src.engine.playback_engine | Executing delay: 1000.0ms
+18:58:52.283 | INFO    | src.engine.playback_engine | Evaluating visual condition [in-memory embedded image] (policy=skip, comparison=appears, threshold=0.80, timeout=10.0s)
+18:58:52.532 | INFO    | src.engine.playback_engine | Visual target matched! Confidence: 1.00 (center: (2584, 337), offset: [+0, +0] -> target: (2584, 337))
+18:58:52.533 | INFO    | src.engine.playback_engine | Executing delay: 1000.0ms
+18:58:53.534 | INFO    | src.engine.playback_engine | Evaluating visual condition [in-memory embedded image] (policy=skip, comparison=appears, threshold=0.80, timeout=10.0s)
+18:58:53.784 | INFO    | src.engine.playback_engine | Visual target matched! Confidence: 1.00 (center: (2500, 338), offset: [+0, +0] -> target: (2500, 338))
+18:58:53.785 | INFO    | src.engine.playback_engine | Executing delay: 1000.0ms
+18:58:54.786 | INFO    | src.engine.playback_engine | Evaluating visual condition [in-memory embedded image] (policy=skip, comparison=appears, threshold=0.80, timeout=10.0s)
+18:58:55.033 | INFO    | src.engine.playback_engine | Visual target matched! Confidence: 1.00 (center: (2584, 337), offset: [+0, +0] -> target: (2584, 337))
+18:58:55.034 | INFO    | src.engine.playback_engine | Executing delay: 1000.0ms
+18:58:56.035 | INFO    | src.engine.playback_engine | Evaluating visual condition [in-memory embedded image] (policy=skip, comparison=appears, threshold=0.80, timeout=10.0s)
+18:58:56.284 | INFO    | src.engine.playback_engine | Visual target matched! Confidence: 1.00 (center: (2500, 338), offset: [+0, +0] -> target: (2500, 338))
+18:58:56.285 | INFO    | src.engine.playback_engine | Executing delay: 1000.0ms
+18:58:57.286 | INFO    | src.engine.playback_engine | Evaluating visual condition [in-memory embedded image] (policy=skip, comparison=appears, threshold=0.80, timeout=10.0s)
+18:58:57.532 | INFO    | src.engine.playback_engine | Visual target matched! Confidence: 1.00 (center: (2584, 337), offset: [+0, +0] -> target: (2584, 337))
+18:58:57.533 | INFO    | src.engine.playback_engine | Executing delay: 1000.0ms
+18:58:58.534 | INFO    | src.engine.playback_engine | Evaluating visual condition [in-memory embedded image] (policy=skip, comparison=appears, threshold=0.80, timeout=10.0s)
+18:58:58.783 | INFO    | src.engine.playback_engine | Visual target matched! Confidence: 1.00 (center: (2500, 338), offset: [+0, +0] -> target: (2500, 338))
+18:58:58.783 | INFO    | src.engine.playback_engine | Executing delay: 1000.0ms
+18:58:59.784 | INFO    | src.engine.playback_engine | Evaluating visual condition [in-memory embedded image] (policy=skip, comparison=appears, threshold=0.80, timeout=10.0s)
+18:59:00.035 | INFO    | src.engine.playback_engine | Visual target matched! Confidence: 1.00 (center: (2584, 337), offset: [+0, +0] -> target: (2584, 337))
+18:59:00.035 | INFO    | src.engine.playback_engine | Executing delay: 1000.0ms
+18:59:01.036 | INFO    | src.engine.playback_engine | Exited Loop block '5f2ab6fd'.
+18:59:01.037 | INFO    | src.engine.playback_engine | Playback completed successfully for 'Untitled Sequence' in 22.53s (1 iteration(s)).
+19:10:49.989 | INFO    | src.engine.orchestrator | Shutting down MacroOrchestrator...
+19:10:49.991 | WARNING | src.engine.orchestrator | Aborting macro execution: Engine shutdown requested
+19:10:49.994 | INFO    | src.engine.orchestrator | MacroOrchestrator shutdown complete.

@@ -19,6 +19,8 @@ from .ast import (
 from .enums import (
     ActionType,
     ButtonState,
+    CvFailurePolicy,
+    CvMouseAction,
     ExecutionState,
     KeyState,
     LoopType,
@@ -88,6 +90,8 @@ __all__: Final[list[str]] = [
     # Domain Enums
     "ActionType",
     "ButtonState",
+    "CvFailurePolicy",
+    "CvMouseAction",
     "ExecutionState",
     "KeyState",
     "LoopType",

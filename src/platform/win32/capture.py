@@ -150,6 +150,17 @@ _delete_dc: Callable[[int], int] = cast(Callable[[int], int], _gdi32.DeleteDC)
 class Win32GdiCapture(FrameCaptureProtocol):
     """High-performance desktop frame provider using Win32 GDI DIB sections."""
 
+    def get_virtual_origin(self) -> tuple[int, int]:
+        """Returns the global top-left coordinate (vx, vy) of the virtual desktop surface."""
+        vx: int = _get_system_metrics(SM_XVIRTUALSCREEN)
+        vy: int = _get_system_metrics(SM_YVIRTUALSCREEN)
+        vw: int = _get_system_metrics(SM_CXVIRTUALSCREEN)
+        vh: int = _get_system_metrics(SM_CYVIRTUALSCREEN)
+
+        if vw <= 0 or vh <= 0:
+            return 0, 0
+        return vx, vy
+
     @override
     def capture(self, region: Rect2D | None = None) -> ImageBuffer:
         vx: int = _get_system_metrics(SM_XVIRTUALSCREEN)

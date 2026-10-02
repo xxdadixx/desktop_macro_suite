@@ -183,12 +183,16 @@ class MacroScheduler:
                 if not self._running:
                     break
 
+            # Handle cancellation without terminating the background worker thread
             if self._token is not None and self._token.is_cancelled():
                 with self._lock:
                     for job in self._jobs.values():
-                        if job.state == JobState.PENDING:
+                        if job.state in (JobState.PENDING, JobState.RUNNING):
                             job.state = JobState.CANCELLED
-                break
+                            job.last_error = "Cancelled via cancellation token"
+                _ = self._wake_event.wait(timeout=0.1)
+                self._wake_event.clear()
+                continue
 
             now: float = time.monotonic()
             next_wake_delay: float = 1.0
@@ -208,6 +212,7 @@ class MacroScheduler:
                 if self._token is not None and self._token.is_cancelled():
                     with self._lock:
                         job.state = JobState.CANCELLED
+                        job.last_error = "Cancelled before execution dispatch"
                     continue
 
                 try:
@@ -225,8 +230,12 @@ class MacroScheduler:
                             job.state = JobState.COMPLETED
                 except Exception as exc:
                     with self._lock:
-                        job.state = JobState.FAILED
-                        job.last_error = str(exc)
+                        if self._token is not None and self._token.is_cancelled():
+                            job.state = JobState.CANCELLED
+                            job.last_error = "Execution aborted by cancellation token"
+                        else:
+                            job.state = JobState.FAILED
+                            job.last_error = str(exc)
 
             if ready_jobs:
                 continue

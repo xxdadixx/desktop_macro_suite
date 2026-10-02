@@ -165,8 +165,9 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
             vw = _get_system_metrics(SM_CXSCREEN)
             vh = _get_system_metrics(SM_CYSCREEN)
 
-        norm_x: int = max(0, min(65535, int(((x - vx) * 65535) / max(1, vw - 1))))
-        norm_y: int = max(0, min(65535, int(((y - vy) * 65535) / max(1, vh - 1))))
+        # Scale coordinates across the virtual desktop using 16-bit fixed-point mapping
+        norm_x: int = max(0, min(65535, int(((x - vx) * 65536.0 / max(1, vw)) + 0.5)))
+        norm_y: int = max(0, min(65535, int(((y - vy) * 65536.0 / max(1, vh)) + 0.5)))
 
         event = INPUT()
         event.type = INPUT_MOUSE
@@ -183,8 +184,6 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
 
     @override
     def send_mouse_button(self, button: MouseButton, state: ButtonState) -> None:
-        events: list[INPUT] = []
-
         match button:
             case MouseButton.LEFT:
                 down_flag = MOUSEEVENTF_LEFTDOWN
@@ -220,19 +219,17 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
 
         match state:
             case ButtonState.DOWN:
-                events.append(create_event(down_flag, data))
+                self._dispatch([create_event(down_flag, data)])
             case ButtonState.UP:
-                events.append(create_event(up_flag, data))
+                self._dispatch([create_event(up_flag, data)])
             case ButtonState.CLICK:
-                events.append(create_event(down_flag, data))
-                events.append(create_event(up_flag, data))
+                self._dispatch([create_event(down_flag, data)])
+                self._dispatch([create_event(up_flag, data)])
             case ButtonState.DOUBLE_CLICK:
-                events.append(create_event(down_flag, data))
-                events.append(create_event(up_flag, data))
-                events.append(create_event(down_flag, data))
-                events.append(create_event(up_flag, data))
-
-        self._dispatch(events)
+                self._dispatch([create_event(down_flag, data)])
+                self._dispatch([create_event(up_flag, data)])
+                self._dispatch([create_event(down_flag, data)])
+                self._dispatch([create_event(up_flag, data)])
 
     @override
     def send_mouse_scroll(self, delta: int, horizontal: bool = False) -> None:
@@ -253,6 +250,7 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
         vk_code: int,
         scan_code: int,
         state: KeyState,
+        is_extended: bool = False,
     ) -> None:
         if scan_code == 0 and vk_code != 0:
             scan_code = _map_virtual_key(vk_code, MAPVK_VK_TO_VSC_EX)
@@ -262,11 +260,15 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
         effective_scan: int = 0
         effective_vk: int = 0
 
+        # Preserve the extended-key flag from hardware hooks, AST metadata, or scan-code prefixes
+        has_extended_prefix: bool = (scan_code & 0xFF00) == 0xE000 or (scan_code & 0xE000) == 0xE000
+        if is_extended or has_extended_prefix:
+            base_flags |= KEYEVENTF_EXTENDEDKEY
+
         if use_scan_code:
             base_flags |= KEYEVENTF_SCANCODE
-            if (scan_code & 0xE000) == 0xE000:
-                base_flags |= KEYEVENTF_EXTENDEDKEY
             effective_scan = scan_code & 0xFF
+            effective_vk = vk_code & 0xFF
         else:
             effective_vk = vk_code & 0xFF
 
@@ -280,15 +282,12 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
             inp.u.ki.dwExtraInfo = 0
             return inp
 
-        events: list[INPUT] = []
-
         match state:
             case KeyState.KEY_DOWN:
-                events.append(create_key_event(base_flags))
+                self._dispatch([create_key_event(base_flags)])
             case KeyState.KEY_UP:
-                events.append(create_key_event(base_flags | KEYEVENTF_KEYUP))
+                self._dispatch([create_key_event(base_flags | KEYEVENTF_KEYUP)])
             case KeyState.KEY_PRESS:
-                events.append(create_key_event(base_flags))
-                events.append(create_key_event(base_flags | KEYEVENTF_KEYUP))
-
-        self._dispatch(events)
+                # Dispatch down and up with microsecond hardware separation
+                self._dispatch([create_key_event(base_flags)])
+                self._dispatch([create_key_event(base_flags | KEYEVENTF_KEYUP)])

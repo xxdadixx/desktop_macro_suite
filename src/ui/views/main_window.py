@@ -5,14 +5,20 @@ from pathlib import Path
 from typing import Final
 
 from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QFont, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QDockWidget,
     QFileDialog,
+    QHBoxLayout,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
     QSplitter,
     QStatusBar,
     QToolBar,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -25,6 +31,12 @@ from src.core.ast import (
     MouseMoveAction,
     MouseScrollAction,
 )
+from src.core.enums import (
+    CvFailurePolicy,
+    CvMouseAction,
+    TriggerComparison,
+)
+from src.core.logging_config import get_qt_log_bridge
 from src.core.serialization import MacroSerializer
 from src.core.types import Point2D, Rect2D
 from src.ui.bridge import UIBridge
@@ -39,7 +51,7 @@ __all__: Final[list[str]] = ["MainWindow"]
 
 
 class MainWindow(QMainWindow):
-    """Primary application workstation interface with clean transport and authoring split."""
+    """Primary application workstation interface with integrated live operation logging console."""
 
     def __init__(
         self,
@@ -53,7 +65,7 @@ class MainWindow(QMainWindow):
         self._current_file_path: str | None = None
 
         self.setWindowTitle("Untitled Sequence - Desktop Automation Suite")
-        self.resize(1180, 750)
+        self.resize(1200, 850)
 
         # Central Splitter Layout
         splitter: QSplitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -79,7 +91,11 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage("Engine initialized. Emergency Kill-Switch active (F12).")
 
         self._build_toolbars()
+        self._build_log_console_dock()
         self._wire_signals()
+
+        # Connect global logging bridge to the live UI console
+        get_qt_log_bridge().log_emitted.connect(self._append_log_entry)
 
     def _build_toolbars(self) -> None:
         toolbar: QToolBar = QToolBar("Main Controls", self)
@@ -132,19 +148,104 @@ class MainWindow(QMainWindow):
         self._act_stop.triggered.connect(self._bridge.abort)
         toolbar.addAction(self._act_stop)
 
+        toolbar.addSeparator()
+
         # Global Hotkey for CV Template capture (Ctrl+G, F7)
         self._act_capture_roi: QAction = QAction("Grab CV Template", self)
         self._act_capture_roi.setShortcuts([QKeySequence("Ctrl+G"), QKeySequence("F7")])
         self._act_capture_roi.setToolTip("Capture Region of Interest for visual template gate (Ctrl+G / F7)")
         self._act_capture_roi.triggered.connect(self._roi_selector.start_selection)
+        toolbar.addAction(self._act_capture_roi)
         self.addAction(self._act_capture_roi)
 
         # Global Hotkey for Coordinate Drag/Pick (Ctrl+Shift+C, F8)
-        self._act_pick_coord: QAction = QAction("Pick Desktop Coordinate", self)
+        self._act_pick_coord: QAction = QAction("Pick Coordinate", self)
         self._act_pick_coord.setShortcuts([QKeySequence("Ctrl+Shift+C"), QKeySequence("F8")])
         self._act_pick_coord.setToolTip("Drag or click crosshair to set action coordinates (Ctrl+Shift+C / F8)")
         self._act_pick_coord.triggered.connect(self._coord_picker.start_selection)
+        toolbar.addAction(self._act_pick_coord)
         self.addAction(self._act_pick_coord)
+
+        toolbar.addSeparator()
+
+        # Log Console Visibility Toggle
+        self._act_toggle_logs: QAction = QAction("📋 Operation Logs", self)
+        self._act_toggle_logs.setCheckable(True)
+        self._act_toggle_logs.setChecked(True)
+        self._act_toggle_logs.setToolTip("Toggle Operation Log Console (Ctrl+L)")
+        self._act_toggle_logs.setShortcut(QKeySequence("Ctrl+Shift+L"))
+        self._act_toggle_logs.toggled.connect(self._on_toggle_log_dock)
+        toolbar.addAction(self._act_toggle_logs)
+
+    def _build_log_console_dock(self) -> None:
+        self._log_dock: QDockWidget = QDockWidget("Operation Logs & Diagnostics", self)
+        self._log_dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea | Qt.DockWidgetArea.TopDockWidgetArea)
+
+        dock_contents: QWidget = QWidget(self._log_dock)
+        layout: QVBoxLayout = QVBoxLayout(dock_contents)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        # Control Bar
+        ctrl_bar: QHBoxLayout = QHBoxLayout()
+        self._chk_autoscroll: QCheckBox = QCheckBox("Auto-scroll", dock_contents)
+        self._chk_autoscroll.setChecked(True)
+        ctrl_bar.addWidget(self._chk_autoscroll)
+
+        btn_clear_logs: QPushButton = QPushButton("Clear", dock_contents)
+        btn_clear_logs.setFixedWidth(60)
+        btn_clear_logs.clicked.connect(self._on_clear_logs)
+        ctrl_bar.addWidget(btn_clear_logs)
+
+        ctrl_bar.addStretch()
+        layout.addLayout(ctrl_bar)
+
+        # Log Output Text Area
+        self._txt_log_output: QPlainTextEdit = QPlainTextEdit(dock_contents)
+        self._txt_log_output.setReadOnly(True)
+        self._txt_log_output.setMaximumBlockCount(2000)
+        mono_font = QFont("Consolas", 9)
+        mono_font.setStyleHint(QFont.StyleHint.Monospace)
+        self._txt_log_output.setFont(mono_font)
+        self._txt_log_output.setStyleSheet(
+            "QPlainTextEdit {"
+            "  background-color: #111418;"
+            "  color: #D4D4D4;"
+            "  border: 1px solid #282C34;"
+            "}"
+        )
+        layout.addWidget(self._txt_log_output)
+
+        self._log_dock.setWidget(dock_contents)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._log_dock)
+
+    def _on_toggle_log_dock(self, visible: bool) -> None:
+        self._log_dock.setVisible(visible)
+
+    def _on_clear_logs(self) -> None:
+        self._txt_log_output.clear()
+
+    @Slot(str, str, str)
+    def _append_log_entry(self, level: str, timestamp: str, message: str) -> None:
+        """Appends color-coded log lines into the live console."""
+        color_map: dict[str, str] = {
+            "DEBUG": "#7F848E",
+            "INFO": "#98C379",
+            "WARNING": "#E5C07B",
+            "ERROR": "#E06C75",
+            "CRITICAL": "#FF3333",
+        }
+        color: str = color_map.get(level, "#D4D4D4")
+        html_line: str = (
+            f'<span style="color:#5C6370;">{timestamp}</span> '
+            f'<b style="color:{color};">[{level:<5}]</b> '
+            f'<span style="color:#ABB2BF;">{message}</span>'
+        )
+        self._txt_log_output.appendHtml(html_line)
+
+        if self._chk_autoscroll.isChecked():
+            cursor = self._txt_log_output.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            self._txt_log_output.setTextCursor(cursor)
 
     def _wire_signals(self) -> None:
         self._timeline.action_selected.connect(self._on_action_selected)
@@ -202,8 +303,9 @@ class MainWindow(QMainWindow):
                 LoopContainerAction,
             ),
         ):
-            self._model.append_action(action)
-            new_row = self._model.rowCount() - 1
+            selected_rows = self._timeline.selected_rows()
+            target_row = selected_rows[-1] if selected_rows else None
+            new_row = self._model.insert_action(action, target_row=target_row)
             self._timeline.select_rows([new_row])
             self._inspector.inspect(new_row, action)
             self._status_bar.showMessage(f"Added {action.action_type.value} to sequence.")
@@ -216,7 +318,7 @@ class MainWindow(QMainWindow):
         self._inspector.inspect(-1, None)
         self._inspector.set_active_tab(1)
         self.setWindowTitle("Untitled Sequence - Desktop Automation Suite")
-        self._status_bar.showMessage("New sequence created. Add actions from the Library on the right.")
+        self._status_bar.showMessage("New sequence created.")
 
     @Slot()
     def _on_open(self) -> None:
@@ -300,6 +402,9 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_error(self, error: str) -> None:
+        if "aborted" in error.lower() or "cancelled" in error.lower():
+            self._status_bar.showMessage(f"Playback stopped: {error}")
+            return
         QMessageBox.warning(self, "Execution Alert", error)
         self._status_bar.showMessage(f"Error: {error}")
 
@@ -311,13 +416,19 @@ class MainWindow(QMainWindow):
                 image_base64=b64_str,
                 confidence_threshold=0.8,
                 timeout_seconds=10.0,
+                comparison=TriggerComparison.APPEARS,
+                failure_policy=CvFailurePolicy.ABORT,
+                mouse_action=CvMouseAction.CLICK,  # Default to moving and clicking target center
+                offset_x=0,
+                offset_y=0,
             )
-            self._model.append_action(trigger_action)
-            new_row = self._model.rowCount() - 1
+            selected_rows = self._timeline.selected_rows()
+            target_row = selected_rows[-1] if selected_rows else None
+            new_row = self._model.insert_action(trigger_action, target_row=target_row)
             self._timeline.select_rows([new_row])
             self._inspector.inspect(new_row, trigger_action)
             self._status_bar.showMessage(
-                f"Visual gate added ({roi.width}x{roi.height} px)."
+                f"Visual click gate created ({roi.width}x{roi.height} px) targeting match center."
             )
         except Exception as e:
             QMessageBox.critical(self, "Template Error", f"Failed to grab template: {e}")

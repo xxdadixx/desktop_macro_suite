@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+import time
 from typing import Final
 
 import cv2
@@ -74,6 +75,28 @@ class UIBridge(QObject):
             return
 
         self.playback_state_changed.emit(True)
+        total_steps: int = len(sequence.actions)
+        start_time: float = time.monotonic()
+
+        # Pre-compute O(1) hash map to avoid O(N) linear scans on every action step
+        action_step_map: dict[str, int] = {
+            act.id: idx + 1 for idx, act in enumerate(sequence.actions)
+        }
+
+        def _on_telemetry(action_id: str, elapsed_ms: float) -> None:
+            _ = elapsed_ms
+            step_idx: int = action_step_map.get(action_id, 0)
+            telemetry = PlaybackTelemetry(
+                is_playing=True,
+                is_recording=False,
+                current_step=step_idx,
+                total_steps=total_steps,
+                iteration=1,
+                total_iterations=repeat_count,
+                elapsed_seconds=round(time.monotonic() - start_time, 1),
+                status_message=f"Executing step {step_idx}/{total_steps}",
+            )
+            self.telemetry_updated.emit(telemetry)
 
         def _on_done() -> None:
             self.playback_state_changed.emit(False)
@@ -85,6 +108,7 @@ class UIBridge(QObject):
         self._orchestrator.play_sequence_threaded(
             sequence=sequence,
             repeat_count=repeat_count,
+            telemetry_callback=_on_telemetry,
             on_complete=_on_done,
             on_error=_on_error,
         )

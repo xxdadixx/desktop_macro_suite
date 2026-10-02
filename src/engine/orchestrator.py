@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from types import TracebackType
@@ -7,6 +8,7 @@ from typing import Final, Self
 
 from src.core.ast import MacroSequence
 from src.core.exceptions import ExecutionError
+from src.core.types import ExecutionTelemetryCallback
 from src.engine.capture_engine import InputCaptureEngine
 from src.engine.kill_switch import (
     DEFAULT_ABORT_VK,
@@ -19,11 +21,13 @@ from src.platform import get_platform_provider
 from src.platform.base import BasePlatformProvider
 from src.vision.trigger import VisualTriggerEvaluator
 
+logger: logging.Logger = logging.getLogger(__name__)
+
 __all__: Final[list[str]] = ["MacroOrchestrator"]
 
 
 class MacroOrchestrator:
-    """Central engine coordinator managing platform subsystems, recording, playback, and scheduling."""
+    """Central engine coordinator managing platform subsystems, recording, playback, and scheduling with structured logging."""
 
     def __init__(
         self,
@@ -106,23 +110,30 @@ class MacroOrchestrator:
         if self._initialized:
             return
 
+        logger.info("Initializing MacroOrchestrator subsystems (%s)...", type(self._platform).__name__)
         self._platform.initialize()
         self._kill_switch.activate()
         self._scheduler.start()
         self._initialized = True
+        logger.info("MacroOrchestrator initialization complete. Emergency Kill-Switch active (F12).")
 
     def shutdown(self) -> None:
-        """Stops background tasks and unhooks low-level platform listeners."""
+        """Stops background tasks, cancels active playback, and unhooks OS listeners."""
         if not self._initialized:
             return
 
+        logger.info("Shutting down MacroOrchestrator...")
+        self.abort("Engine shutdown requested")
+
         if self._capture_engine.is_recording:
+            logger.info("Halting active input capture session during shutdown.")
             _ = self._capture_engine.stop_recording()
 
         self._scheduler.stop()
         self._kill_switch.deactivate()
         self._platform.shutdown()
         self._initialized = False
+        logger.info("MacroOrchestrator shutdown complete.")
 
     def __enter__(self) -> Self:
         self.initialize()
@@ -144,6 +155,7 @@ class MacroOrchestrator:
             if self._capture_engine.is_recording:
                 return
 
+        logger.info("Starting input recording session...")
         self._cancellation_token.reset()
         self._capture_engine.start_recording()
 
@@ -157,7 +169,8 @@ class MacroOrchestrator:
         if not self._capture_engine.is_recording:
             raise ExecutionError("Recording is not currently active")
 
-        _ = self._capture_engine.stop_recording()
+        actions = self._capture_engine.stop_recording()
+        logger.info("Input recording stopped. Captured %d hardware input actions.", len(actions))
         return self._capture_engine.to_macro_sequence(
             name=name,
             description=description,
@@ -168,8 +181,9 @@ class MacroOrchestrator:
         self,
         sequence: MacroSequence,
         repeat_count: int = 1,
+        telemetry_callback: ExecutionTelemetryCallback | None = None,
     ) -> None:
-        """Synchronously executes the given macro sequence."""
+        """Synchronously executes the given macro sequence with optional telemetry tracking."""
         with self._state_lock:
             if self._is_playing:
                 raise ExecutionError("Playback is already in progress")
@@ -177,9 +191,14 @@ class MacroOrchestrator:
                 raise ExecutionError("Cannot play sequence while input recording is active")
             self._is_playing = True
 
+        logger.info("Dispatching synchronous sequence execution: '%s'", sequence.name)
         self._cancellation_token.reset()
         try:
-            self._playback_engine.play(sequence, repeat_count=repeat_count)
+            self._playback_engine.play(
+                sequence=sequence,
+                repeat_count=repeat_count,
+                telemetry_callback=telemetry_callback,
+            )
         finally:
             with self._state_lock:
                 self._is_playing = False
@@ -188,18 +207,40 @@ class MacroOrchestrator:
         self,
         sequence: MacroSequence,
         repeat_count: int = 1,
+        telemetry_callback: ExecutionTelemetryCallback | None = None,
         on_complete: Callable[[], None] | None = None,
         on_error: Callable[[Exception], None] | None = None,
     ) -> threading.Thread:
-        """Dispatches sequence playback in a dedicated background daemon thread."""
+        """Dispatches sequence playback in a dedicated background daemon thread with telemetry."""
         def _worker() -> None:
+            with self._state_lock:
+                if self._is_playing:
+                    if on_error is not None:
+                        on_error(ExecutionError("Playback is already in progress"))
+                    return
+                if self._capture_engine.is_recording:
+                    if on_error is not None:
+                        on_error(ExecutionError("Cannot play sequence while input recording is active"))
+                    return
+                self._is_playing = True
+
+            logger.info("Playback background worker spawned for sequence '%s'.", sequence.name)
+            self._cancellation_token.reset()
             try:
-                self.play_sequence(sequence, repeat_count=repeat_count)
+                self._playback_engine.play(
+                    sequence=sequence,
+                    repeat_count=repeat_count,
+                    telemetry_callback=telemetry_callback,
+                )
                 if on_complete is not None:
                     on_complete()
             except Exception as exc:
+                logger.error("Playback terminated with exception: %s", exc, exc_info=True)
                 if on_error is not None:
                     on_error(exc)
+            finally:
+                with self._state_lock:
+                    self._is_playing = False
 
         thread = threading.Thread(
             target=_worker,
@@ -211,4 +252,5 @@ class MacroOrchestrator:
 
     def abort(self, reason: str = "Manual execution abort requested") -> None:
         """Cancels all active playbacks and pending scheduled tasks."""
+        logger.warning("Aborting macro execution: %s", reason)
         self._cancellation_token.cancel(reason)

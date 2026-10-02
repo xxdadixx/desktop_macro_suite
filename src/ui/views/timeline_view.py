@@ -649,8 +649,10 @@ class TimelineView(QWidget):
 
     def _on_add_delay(self) -> None:
         action = DelayAction(duration_ms=0.0, jitter_ms=0.0)
-        self._model.append_action(action)
-        self.select_row(self._model.rowCount() - 1)
+        rows = self.selected_rows()
+        target_row = rows[-1] if rows else None
+        new_row = self._model.insert_action(action, target_row=target_row)
+        self.select_row(new_row)
 
     def _on_delete(self) -> None:
         rows = self.selected_rows()

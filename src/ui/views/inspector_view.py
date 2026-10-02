@@ -34,7 +34,15 @@ from src.core.ast import (
     MouseMoveAction,
     MouseScrollAction,
 )
-from src.core.enums import ButtonState, KeyState, LoopType, MouseButton
+from src.core.enums import (
+    ButtonState,
+    CvFailurePolicy,
+    CvMouseAction,
+    KeyState,
+    LoopType,
+    MouseButton,
+    TriggerComparison,
+)
 
 __all__: Final[list[str]] = ["ActionInspectorView", "CoordinatePickButton"]
 
@@ -361,10 +369,53 @@ class ActionInspectorView(QWidget):
         self._cv_timeout_spin.setRange(0.1, 3600.0)
         self._cv_timeout_spin.setSuffix(" s")
 
+        self._cv_policy_combo: QComboBox = QComboBox()
+        self._cv_policy_combo.addItem("assert vision.wait_for() [Assert / Wait]", CvFailurePolicy.ABORT)
+        self._cv_policy_combo.addItem("if vision.exists() ... else: pass [If Condition]", CvFailurePolicy.SKIP)
+        self._cv_policy_combo.addItem("if not vision.exists(): break [Break Loop]", CvFailurePolicy.BREAK_LOOP)
+
+        self._cv_comparison_combo: QComboBox = QComboBox()
+        self._cv_comparison_combo.addItem("Target Appears (Visible)", TriggerComparison.APPEARS)
+        self._cv_comparison_combo.addItem("Target Disappears (Hidden)", TriggerComparison.DISAPPEARS)
+
+        self._cv_mouse_action_combo: QComboBox = QComboBox()
+        self._cv_mouse_action_combo.addItem("🎯 Click Target (Left Click)", CvMouseAction.CLICK)
+        self._cv_mouse_action_combo.addItem("👆 Double-Click Target", CvMouseAction.DOUBLE_CLICK)
+        self._cv_mouse_action_combo.addItem("🖱 Right-Click Target", CvMouseAction.RIGHT_CLICK)
+        self._cv_mouse_action_combo.addItem("📍 Move Cursor Only (Hover)", CvMouseAction.MOVE_ONLY)
+        self._cv_mouse_action_combo.addItem("🚫 None (Visual Check Only)", CvMouseAction.NONE)
+        self._cv_mouse_action_combo.currentIndexChanged.connect(self._on_cv_mouse_action_changed)
+
+        self._cv_offset_x_spin: QSpinBox = QSpinBox()
+        self._cv_offset_x_spin.setRange(-2000, 2000)
+        self._cv_offset_x_spin.setSuffix(" px")
+
+        self._cv_offset_y_spin: QSpinBox = QSpinBox()
+        self._cv_offset_y_spin.setRange(-2000, 2000)
+        self._cv_offset_y_spin.setSuffix(" px")
+
         layout.addRow("Template:", self._cv_template_edit)
+        layout.addRow("Flow Policy:", self._cv_policy_combo)
+        layout.addRow("Condition:", self._cv_comparison_combo)
+        layout.addRow("Target Action:", self._cv_mouse_action_combo)
         layout.addRow("Confidence:", self._cv_confidence_spin)
         layout.addRow("Timeout:", self._cv_timeout_spin)
+        layout.addRow("Offset X:", self._cv_offset_x_spin)
+        layout.addRow("Offset Y:", self._cv_offset_y_spin)
         self._stack.addWidget(self._page_cv)
+
+    def _on_cv_mouse_action_changed(self) -> None:
+        """Enables or disables offset inputs depending on whether a cursor action is active."""
+        action = _coerce_enum(self._cv_mouse_action_combo.currentData(), CvMouseAction)
+        has_mouse = action is not None and action != CvMouseAction.NONE
+        self._cv_offset_x_spin.setEnabled(has_mouse)
+        self._cv_offset_y_spin.setEnabled(has_mouse)
+
+    def _on_cv_click_toggled(self, checked: bool) -> None:
+        self._cv_button_combo.setEnabled(checked)
+        self._cv_state_combo.setEnabled(checked)
+        self._cv_offset_x_spin.setEnabled(checked)
+        self._cv_offset_y_spin.setEnabled(checked)
 
     def _build_loop_container_page(self) -> None:
         self._page_loop: QWidget = QWidget(self._stack)
@@ -482,6 +533,25 @@ class ActionInspectorView(QWidget):
                 )
                 self._cv_confidence_spin.setValue(c.confidence_threshold)
                 self._cv_timeout_spin.setValue(c.timeout_seconds)
+
+                for i in range(self._cv_policy_combo.count()):
+                    if self._cv_policy_combo.itemData(i) == c.failure_policy:
+                        self._cv_policy_combo.setCurrentIndex(i)
+                        break
+
+                for i in range(self._cv_comparison_combo.count()):
+                    if self._cv_comparison_combo.itemData(i) == c.comparison:
+                        self._cv_comparison_combo.setCurrentIndex(i)
+                        break
+
+                for i in range(self._cv_mouse_action_combo.count()):
+                    if self._cv_mouse_action_combo.itemData(i) == c.mouse_action:
+                        self._cv_mouse_action_combo.setCurrentIndex(i)
+                        break
+
+                self._cv_offset_x_spin.setValue(c.offset_x)
+                self._cv_offset_y_spin.setValue(c.offset_y)
+                self._on_cv_mouse_action_changed()
                 self._stack.setCurrentWidget(self._page_cv)
 
             case LoopContainerAction() as lp:
@@ -584,6 +654,10 @@ class ActionInspectorView(QWidget):
                     jitter_ms=self._delay_jitter_spin.value(),
                 )
             case CvTriggerAction() as c:
+                pol = _coerce_enum(self._cv_policy_combo.currentData(), CvFailurePolicy) or CvFailurePolicy.ABORT
+                comp = _coerce_enum(self._cv_comparison_combo.currentData(), TriggerComparison) or TriggerComparison.APPEARS
+                mouse_act = _coerce_enum(self._cv_mouse_action_combo.currentData(), CvMouseAction) or CvMouseAction.CLICK
+
                 updated = CvTriggerAction(
                     id=c.id,
                     description=c.description,
@@ -592,6 +666,11 @@ class ActionInspectorView(QWidget):
                     image_base64=c.image_base64,
                     confidence_threshold=self._cv_confidence_spin.value(),
                     timeout_seconds=self._cv_timeout_spin.value(),
+                    comparison=comp,
+                    failure_policy=pol,
+                    mouse_action=mouse_act,
+                    offset_x=self._cv_offset_x_spin.value(),
+                    offset_y=self._cv_offset_y_spin.value(),
                 )
             case LoopContainerAction() as lp:
                 selected_type = _coerce_enum(self._loop_type_combo.currentData(), LoopType)

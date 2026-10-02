@@ -90,7 +90,13 @@ class InputSynthesizerProtocol(Protocol):
     def send_mouse_scroll(self, delta: int, horizontal: bool = False) -> None:
         raise NotImplementedError("Protocol implementation required")
 
-    def send_keyboard_key(self, vk_code: int, scan_code: int, state: KeyState) -> None:
+    def send_keyboard_key(
+        self,
+        vk_code: int,
+        scan_code: int,
+        state: KeyState,
+        is_extended: bool = False,
+    ) -> None:
         raise NotImplementedError("Protocol implementation required")
 
 

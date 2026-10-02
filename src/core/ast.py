@@ -10,7 +10,16 @@ from pydantic import (
     PositiveInt,
 )
 
-from .enums import ActionType, ButtonState, KeyState, LoopType, MouseButton
+from .enums import (
+    ActionType,
+    ButtonState,
+    CvFailurePolicy,
+    CvMouseAction,
+    KeyState,
+    LoopType,
+    MouseButton,
+    TriggerComparison,
+)
 
 
 def _generate_action_id() -> str:
@@ -63,7 +72,7 @@ class DelayAction(BaseAction):
 
 
 class CvTriggerAction(BaseAction):
-    """Computer vision gate requiring visual match before sequence progression."""
+    """Computer vision trigger with target interaction and branching policies."""
 
     action_type: Literal[ActionType.CV_TRIGGER] = ActionType.CV_TRIGGER
     template_path: str = Field(
@@ -83,7 +92,27 @@ class CvTriggerAction(BaseAction):
     timeout_seconds: float = Field(
         default=10.0,
         ge=0.0,
-        description="Maximum seconds to poll before raising MacroTimeoutError",
+        description="Maximum seconds to poll before applying failure policy",
+    )
+    comparison: TriggerComparison = Field(
+        default=TriggerComparison.APPEARS,
+        description="Condition criteria: image appears or disappears",
+    )
+    failure_policy: CvFailurePolicy = Field(
+        default=CvFailurePolicy.ABORT,
+        description="Control flow policy if condition fails within timeout",
+    )
+    mouse_action: CvMouseAction = Field(
+        default=CvMouseAction.CLICK,
+        description="Mouse interaction to perform on detected target center",
+    )
+    offset_x: int = Field(
+        default=0,
+        description="Horizontal pixel offset relative to matched target center",
+    )
+    offset_y: int = Field(
+        default=0,
+        description="Vertical pixel offset relative to matched target center",
     )
 
 

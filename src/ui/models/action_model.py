@@ -24,7 +24,7 @@ from src.core.ast import (
     MouseMoveAction,
     MouseScrollAction,
 )
-from src.core.enums import LoopType
+from src.core.enums import CvFailurePolicy, CvMouseAction, LoopType
 
 __all__: Final[list[str]] = ["ActionSequenceModel", "FlatActionRow"]
 
@@ -180,6 +180,58 @@ class ActionSequenceModel(QAbstractTableModel):
 
         self._flat_rows = _flatten(self._root_actions)
 
+    def insert_action(self, action: ActionNode, target_row: int | None = None) -> int:
+        """Inserts an action contextually relative to the target row or current scope.
+
+        If target_row is a LoopContainerAction, the action is inserted as a child inside the loop.
+        If target_row is a child within a loop, the action is inserted after it within the same loop.
+        If target_row is at the root level, the action is inserted after it at the root level.
+        If target_row is None and the sequence ends with an empty loop, it is inserted into that loop.
+        Otherwise, it is appended to the root actions.
+        Returns the new 0-based row index of the inserted action.
+        """
+        if not self._flat_rows:
+            self.beginResetModel()
+            self._root_actions.append(action)
+            self._rebuild_flat_rows()
+            self.endResetModel()
+            return 0
+
+        if target_row is None or not (0 <= target_row < len(self._flat_rows)):
+            last_flat = self._flat_rows[-1]
+            if isinstance(last_flat.action, LoopContainerAction) and not last_flat.action.actions:
+                target_flat = last_flat
+            else:
+                self.beginResetModel()
+                self._root_actions.append(action)
+                self._rebuild_flat_rows()
+                self.endResetModel()
+                return self.find_row_by_id(action.id)
+        else:
+            target_flat = self._flat_rows[target_row]
+
+        target_id = target_flat.action.id
+        into_container_first = target_flat.is_loop_header
+
+        self.beginResetModel()
+        found, new_roots = _insert_in_tree(
+            self._root_actions,
+            target_id=target_id,
+            to_insert=[action],
+            insert_after=not target_flat.is_loop_header,
+            into_container_first=into_container_first,
+        )
+        if found:
+            self._root_actions = new_roots
+        else:
+            self._root_actions.append(action)
+
+        self._rebuild_flat_rows()
+        self.endResetModel()
+
+        new_idx = self.find_row_by_id(action.id)
+        return new_idx if new_idx >= 0 else (len(self._flat_rows) - 1)
+
     @override
     def rowCount(
         self,
@@ -260,7 +312,24 @@ class ActionSequenceModel(QAbstractTableModel):
                 return f"{prefix}time.sleep(duration_ms={d.duration_ms:.1f}{jitter})"
             case CvTriggerAction() as c:
                 target = c.template_path if c.template_path else "Embedded Image"
-                return f'{prefix}vision.wait_for_trigger(target="{target}", confidence={c.confidence_threshold:.2f}, timeout_seconds={c.timeout_seconds:.1f})'
+                mouse_suffix = ""
+                match c.mouse_action:
+                    case CvMouseAction.CLICK:
+                        mouse_suffix = " -> mouse.click()"
+                    case CvMouseAction.DOUBLE_CLICK:
+                        mouse_suffix = " -> mouse.double_click()"
+                    case CvMouseAction.RIGHT_CLICK:
+                        mouse_suffix = " -> mouse.right_click()"
+                    case CvMouseAction.MOVE_ONLY:
+                        mouse_suffix = " -> mouse.move_to()"
+                    case CvMouseAction.NONE:
+                        mouse_suffix = ""
+
+                if c.failure_policy == CvFailurePolicy.SKIP:
+                    return f'{prefix}if vision.exists("{target}", conf={c.confidence_threshold:.2f}):{mouse_suffix} else: pass'
+                if c.failure_policy == CvFailurePolicy.BREAK_LOOP:
+                    return f'{prefix}if not vision.exists("{target}"): break{mouse_suffix}'
+                return f'{prefix}assert vision.wait_for("{target}", timeout={c.timeout_seconds:.1f}s){mouse_suffix}'
             case LoopContainerAction() as lp:
                 match lp.loop_type:
                     case LoopType.COUNT:
@@ -350,13 +419,42 @@ class ActionSequenceModel(QAbstractTableModel):
 
             case CvTriggerAction() as c:
                 target_name = c.template_path if c.template_path else "Embedded Image"
-                content = (
-                    f'<span style="color:#61AFEF;">vision</span>.<span style="color:#56B6C2;">wait_for_trigger</span>('
-                    f'<span style="color:#E06C75;">target</span>=<span style="color:#98C379;">"{target_name}"</span>, '
-                    f'<span style="color:#E06C75;">confidence</span>=<span style="color:#D19A66;">{c.confidence_threshold:.2f}</span>, '
-                    f'<span style="color:#E06C75;">timeout</span>=<span style="color:#D19A66;">{c.timeout_seconds:.1f}s</span>'
-                    f'<span style="color:#ABB2BF;">)</span>'
-                )
+                mouse_html = ""
+                match c.mouse_action:
+                    case CvMouseAction.CLICK:
+                        mouse_html = ' <span style="color:#56B6C2;">-&gt;</span> <span style="color:#61AFEF;">mouse</span>.<span style="color:#56B6C2;">click</span>()'
+                    case CvMouseAction.DOUBLE_CLICK:
+                        mouse_html = ' <span style="color:#56B6C2;">-&gt;</span> <span style="color:#61AFEF;">mouse</span>.<span style="color:#56B6C2;">double_click</span>()'
+                    case CvMouseAction.RIGHT_CLICK:
+                        mouse_html = ' <span style="color:#56B6C2;">-&gt;</span> <span style="color:#61AFEF;">mouse</span>.<span style="color:#56B6C2;">right_click</span>()'
+                    case CvMouseAction.MOVE_ONLY:
+                        mouse_html = ' <span style="color:#56B6C2;">-&gt;</span> <span style="color:#61AFEF;">mouse</span>.<span style="color:#56B6C2;">move_to</span>()'
+                    case CvMouseAction.NONE:
+                        mouse_html = ""
+
+                if c.failure_policy == CvFailurePolicy.SKIP:
+                    content = (
+                        f'<span style="color:#C678DD; font-weight:bold;">if</span> '
+                        f'<span style="color:#61AFEF;">vision</span>.<span style="color:#56B6C2;">exists</span>('
+                        f'<span style="color:#98C379;">"{target_name}"</span>)'
+                        f'<span style="color:#ABB2BF;">:</span>{mouse_html} '
+                        f'<span style="color:#C678DD; font-weight:bold;">else</span>: <span style="color:#5C6370;">pass</span>'
+                    )
+                elif c.failure_policy == CvFailurePolicy.BREAK_LOOP:
+                    content = (
+                        f'<span style="color:#C678DD; font-weight:bold;">if not</span> '
+                        f'<span style="color:#61AFEF;">vision</span>.<span style="color:#56B6C2;">exists</span>('
+                        f'<span style="color:#98C379;">"{target_name}"</span>)'
+                        f'<span style="color:#ABB2BF;">:</span> <span style="color:#E06C75; font-weight:bold;">break</span>{mouse_html}'
+                    )
+                else:
+                    content = (
+                        f'<span style="color:#E06C75; font-weight:bold;">assert</span> '
+                        f'<span style="color:#61AFEF;">vision</span>.<span style="color:#56B6C2;">wait_for</span>('
+                        f'<span style="color:#98C379;">"{target_name}"</span>, '
+                        f'<span style="color:#E06C75;">timeout</span>=<span style="color:#D19A66;">{c.timeout_seconds:.1f}s</span>)'
+                        f'{mouse_html}'
+                    )
 
             case LoopContainerAction() as lp:
                 match lp.loop_type:
@@ -678,10 +776,21 @@ class ActionSequenceModel(QAbstractTableModel):
             self.append_action(new_loop)
             return len(self._flat_rows) - 1
 
-        selected_ids = {self._flat_rows[r].action.id for r in valid_rows}
-        first_row_id = self._flat_rows[valid_rows[0]].action.id
-        actions_to_wrap: list[ActionNode] = [self._flat_rows[r].action for r in valid_rows]
+        raw_selected_actions: list[ActionNode] = [self._flat_rows[r].action for r in valid_rows]
+        first_row_id: str = self._flat_rows[valid_rows[0]].action.id
         new_loop_id: str = str(uuid.uuid4())
+
+        # Prune nested descendant actions from the selection list to prevent duplicate UUIDs
+        all_descendants: set[str] = set()
+        for act in raw_selected_actions:
+            if isinstance(act, LoopContainerAction):
+                for child in act.actions:
+                    all_descendants.update(_collect_descendant_ids(child))
+
+        filtered_actions_to_wrap: list[ActionNode] = [
+            act for act in raw_selected_actions if act.id not in all_descendants
+        ]
+        selected_ids: set[str] = {act.id for act in filtered_actions_to_wrap}
 
         def _wrap_tree(actions: list[ActionNode]) -> list[ActionNode]:
             new_list: list[ActionNode] = []
@@ -693,7 +802,7 @@ class ActionSequenceModel(QAbstractTableModel):
                         id=new_loop_id,
                         loop_type=loop_type,
                         iterations=iterations,
-                        actions=actions_to_wrap,
+                        actions=filtered_actions_to_wrap,
                     )
                     new_list.append(loop_block)
                     loop_inserted = True
