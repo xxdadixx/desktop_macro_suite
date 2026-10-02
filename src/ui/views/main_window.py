@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Final
 
 from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QAction, QFont, QKeySequence, QTextCursor
+from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QDockWidget,
@@ -44,7 +44,7 @@ from src.ui.models.action_model import ActionSequenceModel
 from src.ui.models.telemetry_model import PlaybackTelemetry
 from src.ui.views.coordinate_picker import CoordinatePickerOverlay
 from src.ui.views.inspector_view import ActionInspectorView
-from src.ui.views.roi_selector import RoiSelectorOverlay
+from src.ui.views.roi_selector import RoiSelectorOverlay, TargetHighlightOverlay
 from src.ui.views.timeline_view import TimelineView
 
 __all__: Final[list[str]] = ["MainWindow"]
@@ -67,7 +67,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Untitled Sequence - Desktop Automation Suite")
         self.resize(1200, 850)
 
-        # Central Splitter Layout
         splitter: QSplitter = QSplitter(Qt.Orientation.Horizontal, self)
         self._timeline: TimelineView = TimelineView(self._model, splitter)
         self._inspector: ActionInspectorView = ActionInspectorView(splitter)
@@ -78,14 +77,14 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 4)
         self.setCentralWidget(splitter)
 
-        # Screen Overlays (ROI Cropper & Coordinate Crosshair Dropper)
         self._roi_selector: RoiSelectorOverlay = RoiSelectorOverlay()
         self._roi_selector.roi_selected.connect(self._on_roi_captured)
 
         self._coord_picker: CoordinatePickerOverlay = CoordinatePickerOverlay()
         self._coord_picker.coordinate_selected.connect(self._on_coordinate_captured)
 
-        # Status Bar
+        self._target_overlay: TargetHighlightOverlay = TargetHighlightOverlay()
+
         self._status_bar: QStatusBar = QStatusBar(self)
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("Engine initialized. Emergency Kill-Switch active (F12).")
@@ -94,7 +93,6 @@ class MainWindow(QMainWindow):
         self._build_log_console_dock()
         self._wire_signals()
 
-        # Connect global logging bridge to the live UI console
         get_qt_log_bridge().log_emitted.connect(self._append_log_entry)
 
     def _build_toolbars(self) -> None:
@@ -102,7 +100,6 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
-        # File actions
         self._act_new: QAction = QAction("New", self)
         self._act_new.setShortcut(QKeySequence.StandardKey.New)
         self._act_new.setToolTip("Create new sequence (Ctrl+N)")
@@ -129,7 +126,6 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # Engine Transport controls
         self._act_record: QAction = QAction("● Record (Ctrl+R)", self)
         self._act_record.setShortcut(QKeySequence("Ctrl+R"))
         self._act_record.setToolTip("Toggle hardware event recording (Ctrl+R)")
@@ -150,29 +146,22 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # Global Hotkey for CV Template capture (Ctrl+G, F7)
         self._act_capture_roi: QAction = QAction("Grab CV Template", self)
-        self._act_capture_roi.setShortcuts([QKeySequence("Ctrl+G"), QKeySequence("F7")])
-        self._act_capture_roi.setToolTip("Capture Region of Interest for visual template gate (Ctrl+G / F7)")
-        self._act_capture_roi.triggered.connect(self._roi_selector.start_selection)
+        self._act_capture_roi.setToolTip("Capture Region of Interest for visual template gate (Global: Ctrl+G / F7)")
+        self._act_capture_roi.triggered.connect(self._start_roi_capture)
         toolbar.addAction(self._act_capture_roi)
-        self.addAction(self._act_capture_roi)
 
-        # Global Hotkey for Coordinate Drag/Pick (Ctrl+Shift+C, F8)
         self._act_pick_coord: QAction = QAction("Pick Coordinate", self)
-        self._act_pick_coord.setShortcuts([QKeySequence("Ctrl+Shift+C"), QKeySequence("F8")])
-        self._act_pick_coord.setToolTip("Drag or click crosshair to set action coordinates (Ctrl+Shift+C / F8)")
-        self._act_pick_coord.triggered.connect(self._coord_picker.start_selection)
+        self._act_pick_coord.setToolTip("Drag or click crosshair to set action coordinates (Global: Ctrl+Shift+C / F8)")
+        self._act_pick_coord.triggered.connect(self._start_coord_pick)
         toolbar.addAction(self._act_pick_coord)
-        self.addAction(self._act_pick_coord)
 
         toolbar.addSeparator()
 
-        # Log Console Visibility Toggle
         self._act_toggle_logs: QAction = QAction("📋 Operation Logs", self)
         self._act_toggle_logs.setCheckable(True)
         self._act_toggle_logs.setChecked(True)
-        self._act_toggle_logs.setToolTip("Toggle Operation Log Console (Ctrl+L)")
+        self._act_toggle_logs.setToolTip("Toggle Operation Log Console (Ctrl+Shift+L)")
         self._act_toggle_logs.setShortcut(QKeySequence("Ctrl+Shift+L"))
         self._act_toggle_logs.toggled.connect(self._on_toggle_log_dock)
         toolbar.addAction(self._act_toggle_logs)
@@ -185,7 +174,6 @@ class MainWindow(QMainWindow):
         layout: QVBoxLayout = QVBoxLayout(dock_contents)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # Control Bar
         ctrl_bar: QHBoxLayout = QHBoxLayout()
         self._chk_autoscroll: QCheckBox = QCheckBox("Auto-scroll", dock_contents)
         self._chk_autoscroll.setChecked(True)
@@ -199,7 +187,6 @@ class MainWindow(QMainWindow):
         ctrl_bar.addStretch()
         layout.addLayout(ctrl_bar)
 
-        # Log Output Text Area
         self._txt_log_output: QPlainTextEdit = QPlainTextEdit(dock_contents)
         self._txt_log_output.setReadOnly(True)
         self._txt_log_output.setMaximumBlockCount(2000)
@@ -226,7 +213,6 @@ class MainWindow(QMainWindow):
 
     @Slot(str, str, str)
     def _append_log_entry(self, level: str, timestamp: str, message: str) -> None:
-        """Appends color-coded log lines into the live console."""
         color_map: dict[str, str] = {
             "DEBUG": "#7F848E",
             "INFO": "#98C379",
@@ -253,13 +239,88 @@ class MainWindow(QMainWindow):
 
         self._inspector.action_updated.connect(self._on_action_updated)
         self._inspector.action_created.connect(self._on_action_created)
-        self._inspector.request_cv_capture.connect(self._roi_selector.start_selection)
-        self._inspector.request_coordinate_pick.connect(self._coord_picker.start_selection)
+        self._inspector.request_cv_capture.connect(self._start_roi_capture)
+        self._inspector.request_coordinate_pick.connect(self._start_coord_pick)
+        self._inspector.request_locate_crop.connect(self._on_locate_crop)
+        self._inspector.request_test_cv.connect(self._on_test_cv_action)
 
         self._bridge.recording_state_changed.connect(self._on_recording_changed)
         self._bridge.playback_state_changed.connect(self._on_playback_changed)
         self._bridge.telemetry_updated.connect(self._on_telemetry_updated)
         self._bridge.error_occurred.connect(self._on_error)
+        self._bridge.roi_capture_requested.connect(self._start_roi_capture)
+        self._bridge.coord_pick_requested.connect(self._start_coord_pick)
+
+    @Slot()
+    def _start_roi_capture(self) -> None:
+        if self._roi_selector.isVisible() or self._coord_picker.isVisible():
+            return
+        self._roi_selector.start_selection()
+
+    @Slot()
+    def _start_coord_pick(self) -> None:
+        if self._roi_selector.isVisible() or self._coord_picker.isVisible():
+            return
+        self._coord_picker.start_selection()
+
+    @Slot(int, int, int, int)
+    def _on_locate_crop(self, x: int, y: int, w: int, h: int) -> None:
+        if w > 0 and h > 0:
+            crop_rect = Rect2D(x=x, y=y, width=w, height=h)
+            self._target_overlay.highlight(
+                rect=crop_rect,
+                color=QColor(0, 229, 255),
+                label=f"Original Crop Area ({w}×{h} px)",
+                duration_ms=2000,
+            )
+            self._status_bar.showMessage(f"Highlighted original crop location at ({x}, {y}) [{w}×{h} px].")
+
+    @Slot(object)
+    def _on_test_cv_action(self, action: object) -> None:
+        if isinstance(action, CvTriggerAction):
+            try:
+                result = self._bridge.test_cv_action(action)
+                self._inspector.display_cv_test_result(result, action.confidence_threshold)
+
+                if result.found and result.region is not None:
+                    self._target_overlay.highlight(
+                        rect=result.region,
+                        color=QColor(0, 230, 118),
+                        label=f"Matched ({result.confidence * 100:.1f}%)",
+                        duration_ms=2000,
+                    )
+                    self._status_bar.showMessage(
+                        f"CV Test: Matched target with {result.confidence * 100:.1f}% confidence."
+                    )
+                else:
+                    self._status_bar.showMessage(
+                        f"CV Test: Target not detected. Peak confidence: {result.confidence * 100:.1f}%."
+                    )
+            except Exception as err:
+                QMessageBox.warning(self, "CV Test Error", f"Failed to test template match: {err}")
+                self._status_bar.showMessage(f"CV Test Error: {err}")
+        elif isinstance(action, CvMultiTriggerAction):
+            try:
+                branch, result = self._bridge.test_cv_multi_action(action)
+                self._inspector.display_cv_multi_test_result(branch, result)
+
+                if branch is not None and result is not None and result.found and result.region is not None:
+                    self._target_overlay.highlight(
+                        rect=result.region,
+                        color=QColor(0, 230, 118),
+                        label=f"Matched: '{branch.name}' ({result.confidence * 100:.1f}%)",
+                        duration_ms=2000,
+                    )
+                    self._status_bar.showMessage(
+                        f"CV Multi-Test: Matched '{branch.name}' with {result.confidence * 100:.1f}% confidence."
+                    )
+                else:
+                    self._status_bar.showMessage(
+                        "CV Multi-Test: No candidate targets matched on active screen."
+                    )
+            except Exception as err:
+                QMessageBox.warning(self, "CV Test Error", f"Failed to test multi-template match: {err}")
+                self._status_bar.showMessage(f"CV Test Error: {err}")
 
     @Slot(int, object)
     def _on_action_updated(self, row: int, updated: object) -> None:
@@ -418,9 +479,13 @@ class MainWindow(QMainWindow):
                 timeout_seconds=10.0,
                 comparison=TriggerComparison.APPEARS,
                 failure_policy=CvFailurePolicy.ABORT,
-                mouse_action=CvMouseAction.CLICK,  # Default to moving and clicking target center
+                mouse_action=CvMouseAction.CLICK,
                 offset_x=0,
                 offset_y=0,
+                crop_x=roi.x,
+                crop_y=roi.y,
+                crop_width=roi.width,
+                crop_height=roi.height,
             )
             selected_rows = self._timeline.selected_rows()
             target_row = selected_rows[-1] if selected_rows else None
@@ -430,6 +495,17 @@ class MainWindow(QMainWindow):
             self._status_bar.showMessage(
                 f"Visual click gate created ({roi.width}x{roi.height} px) targeting match center."
             )
+
+            self._target_overlay.highlight(
+                rect=roi,
+                color=QColor(0, 229, 255),
+                label=f"Cropped Template ({roi.width}×{roi.height} px)",
+                duration_ms=1200,
+            )
+
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
         except Exception as e:
             QMessageBox.critical(self, "Template Error", f"Failed to grab template: {e}")
 
@@ -437,3 +513,6 @@ class MainWindow(QMainWindow):
     def _on_coordinate_captured(self, point: Point2D) -> None:
         self._inspector.set_target_coordinates(point.x, point.y)
         self._status_bar.showMessage(f"Target coordinates set to ({point.x}, {point.y}).")
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()

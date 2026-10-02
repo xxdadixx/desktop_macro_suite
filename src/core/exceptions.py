@@ -88,12 +88,20 @@ class ExecutionAbortedError(ExecutionError):
 class MacroTimeoutError(ExecutionError):
     """Raised when a deterministic delay or visual gate exceeds its timeout limit."""
 
-    def __init__(self, action_id: str, timeout_seconds: float) -> None:
-        super().__init__(
-            f"Action '{action_id}' timed out after {timeout_seconds:.3f}s",
-            action_id=action_id,
-        )
+    def __init__(
+        self,
+        action_id: str,
+        timeout_seconds: float,
+        peak_confidence: float | None = None,
+        threshold: float | None = None,
+    ) -> None:
+        message = f"Action '{action_id}' timed out after {timeout_seconds:.3f}s"
+        if peak_confidence is not None and threshold is not None:
+            message += f" (peak confidence: {peak_confidence:.2f}, required threshold: {threshold:.2f})"
+        super().__init__(message, action_id=action_id)
         self.timeout_seconds: float = timeout_seconds
+        self.peak_confidence: float | None = peak_confidence
+        self.threshold: float | None = threshold
 
 
 class VisionError(MacroSuiteError):

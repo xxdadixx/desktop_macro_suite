@@ -15,6 +15,7 @@ from .enums import (
     ButtonState,
     CvFailurePolicy,
     CvMouseAction,
+    CvSelectionStrategy,
     KeyState,
     LoopType,
     MouseButton,
@@ -114,6 +115,65 @@ class CvTriggerAction(BaseAction):
         default=0,
         description="Vertical pixel offset relative to matched target center",
     )
+    crop_x: int | None = Field(
+        default=None,
+        description="Original capture surface top-left X coordinate",
+    )
+    crop_y: int | None = Field(
+        default=None,
+        description="Original capture surface top-left Y coordinate",
+    )
+    crop_width: int | None = Field(
+        default=None,
+        description="Original capture region width in pixels",
+    )
+    crop_height: int | None = Field(
+        default=None,
+        description="Original capture region height in pixels",
+    )
+
+
+class CvBranchCase(BaseModel):
+    """Candidate visual target branch evaluated within a CvMultiTriggerAction container."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(default_factory=_generate_action_id)
+    name: str = Field(default="Target Case")
+    template_path: str = Field(default="")
+    image_base64: str = Field(default="")
+    confidence_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    mouse_action: CvMouseAction = Field(default=CvMouseAction.CLICK)
+    offset_x: int = Field(default=0)
+    offset_y: int = Field(default=0)
+    crop_x: int | None = Field(default=None)
+    crop_y: int | None = Field(default=None)
+    crop_width: int | None = Field(default=None)
+    crop_height: int | None = Field(default=None)
+    actions: list["ActionNode"] = Field(default_factory=list)
+
+
+class CvMultiTriggerAction(BaseAction):
+    """Evaluates multiple visual targets simultaneously against screen frames and executes the matching branch."""
+
+    action_type: Literal[ActionType.CV_MULTI_TRIGGER] = ActionType.CV_MULTI_TRIGGER
+    timeout_seconds: float = Field(
+        default=10.0,
+        ge=0.0,
+        description="Maximum seconds to poll candidate pool before applying failure policy",
+    )
+    strategy: CvSelectionStrategy = Field(
+        default=CvSelectionStrategy.FIRST_MATCH,
+        description="Selection criteria: first candidate exceeding threshold or candidate with highest score",
+    )
+    failure_policy: CvFailurePolicy = Field(
+        default=CvFailurePolicy.SKIP,
+        description="Control flow policy if no candidates match within timeout",
+    )
+    branches: list[CvBranchCase] = Field(
+        default_factory=list,
+        description="List of candidate templates and their corresponding actions",
+    )
 
 
 class LoopContainerAction(BaseAction):
@@ -153,6 +213,7 @@ ActionNode: TypeAlias = Annotated[
         KeyboardKeyAction,
         DelayAction,
         CvTriggerAction,
+        CvMultiTriggerAction,
         LoopContainerAction,
     ],
     Field(discriminator="action_type"),
@@ -170,5 +231,7 @@ class MacroSequence(BaseModel):
     actions: list[ActionNode] = Field(default_factory=list)
 
 
+CvBranchCase.model_rebuild()
+CvMultiTriggerAction.model_rebuild()
 LoopContainerAction.model_rebuild()
 MacroSequence.model_rebuild()

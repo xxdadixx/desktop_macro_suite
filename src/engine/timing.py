@@ -9,6 +9,7 @@ from src.core.types import CancellationTokenProtocol, Milliseconds, Nanoseconds
 NS_PER_MS: Final[int] = 1_000_000
 NS_PER_SECOND: Final[int] = 1_000_000_000
 COARSE_SLEEP_THRESHOLD_NS: Final[int] = 3 * NS_PER_MS
+MAX_COARSE_CHUNK_NS: Final[int] = 10 * NS_PER_MS
 
 
 class PreciseTimer:
@@ -38,8 +39,8 @@ class PreciseTimer:
                 break
 
             if remaining_ns > COARSE_SLEEP_THRESHOLD_NS:
-                sleep_seconds: float = (remaining_ns - COARSE_SLEEP_THRESHOLD_NS) / NS_PER_SECOND
-                time.sleep(sleep_seconds)
+                sleep_ns: int = min(remaining_ns - COARSE_SLEEP_THRESHOLD_NS, MAX_COARSE_CHUNK_NS)
+                time.sleep(sleep_ns / NS_PER_SECOND)
             else:
                 while time.perf_counter_ns() < target_deadline_ns:
                     if cancellation_token is not None:
@@ -70,8 +71,8 @@ class PreciseTimer:
                 break
 
             if remaining_ns > COARSE_SLEEP_THRESHOLD_NS:
-                sleep_seconds: float = (remaining_ns - COARSE_SLEEP_THRESHOLD_NS) / NS_PER_SECOND
-                await asyncio.sleep(sleep_seconds)
+                sleep_ns: int = min(remaining_ns - COARSE_SLEEP_THRESHOLD_NS, MAX_COARSE_CHUNK_NS)
+                await asyncio.sleep(sleep_ns / NS_PER_SECOND)
             else:
                 while time.perf_counter_ns() < target_deadline_ns:
                     if cancellation_token is not None:

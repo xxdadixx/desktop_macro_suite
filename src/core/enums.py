@@ -9,6 +9,7 @@ class ActionType(StrEnum):
     KEYBOARD_KEY = "keyboard_key"
     DELAY = "delay"
     CV_TRIGGER = "cv_trigger"
+    CV_MULTI_TRIGGER = "cv_multi_trigger"
     LOOP_CONTAINER = "loop_container"
 
 
@@ -60,11 +61,13 @@ class ExecutionState(StrEnum):
     PAUSED = "paused"
     ABORTED = "aborted"
 
+
 @unique
 class CvFailurePolicy(StrEnum):
     ABORT = "abort"        # Assert / Gate: Raise MacroTimeoutError on failure
     SKIP = "skip"          # If-Condition: Skip execution and continue smoothly
     BREAK_LOOP = "break"   # Loop Control: Break enclosing loop if match fails
+
 
 @unique
 class CvMouseAction(StrEnum):
@@ -73,3 +76,9 @@ class CvMouseAction(StrEnum):
     CLICK = "click"
     DOUBLE_CLICK = "double_click"
     RIGHT_CLICK = "right_click"
+
+
+@unique
+class CvSelectionStrategy(StrEnum):
+    FIRST_MATCH = "first_match"          # Executes the first candidate exceeding threshold (priority order)
+    BEST_CONFIDENCE = "best_confidence"  # Evaluates all candidates and executes the highest match score

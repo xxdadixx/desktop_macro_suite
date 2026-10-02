@@ -7,7 +7,7 @@ from types import TracebackType
 from typing import Final, Self
 
 from src.core.ast import MacroSequence
-from src.core.exceptions import ExecutionError
+from src.core.exceptions import ExecutionAbortedError, ExecutionError
 from src.core.types import ExecutionTelemetryCallback
 from src.engine.capture_engine import InputCaptureEngine
 from src.engine.kill_switch import (
@@ -199,6 +199,9 @@ class MacroOrchestrator:
                 repeat_count=repeat_count,
                 telemetry_callback=telemetry_callback,
             )
+        except ExecutionAbortedError as exc:
+            logger.info("Synchronous playback halted gracefully: %s", exc)
+            raise
         finally:
             with self._state_lock:
                 self._is_playing = False
@@ -234,6 +237,10 @@ class MacroOrchestrator:
                 )
                 if on_complete is not None:
                     on_complete()
+            except ExecutionAbortedError as exc:
+                logger.info("Playback halted gracefully: %s", exc)
+                if on_error is not None:
+                    on_error(exc)
             except Exception as exc:
                 logger.error("Playback terminated with exception: %s", exc, exc_info=True)
                 if on_error is not None:

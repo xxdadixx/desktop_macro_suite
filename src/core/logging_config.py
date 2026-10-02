@@ -27,7 +27,7 @@ class QtLogBridge(QObject):
 
 
 class _QtLogHandler(logging.Handler):
-    """Logging handler redirecting records through the Qt signal event queue."""
+    """Logging handler redirecting records through the Qt signal event queue without format duplication."""
 
     def __init__(self, bridge: QtLogBridge) -> None:
         super().__init__()
@@ -36,7 +36,8 @@ class _QtLogHandler(logging.Handler):
     @override
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            msg: str = self.format(record)
+            # Emit raw message body to prevent duplicate timestamp/level headers in the UI console
+            msg: str = record.getMessage()
             time_str: str = self.formatter.formatTime(record, LOG_DATE_FORMAT) if self.formatter else ""
             self._bridge.log_emitted.emit(record.levelname, time_str, msg)
         except Exception:

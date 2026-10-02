@@ -23,8 +23,13 @@ MIN_DELAY_THRESHOLD_MS: Final[float] = 1.0
 class InputCaptureEngine:
     """Captures low-level hardware input events and normalizes them into AST action nodes."""
 
-    def __init__(self, hook_manager: LowLevelHookManagerProtocol) -> None:
+    def __init__(
+        self,
+        hook_manager: LowLevelHookManagerProtocol,
+        abort_vk_code: int = 0x7B,
+    ) -> None:
         self._hook_manager: LowLevelHookManagerProtocol = hook_manager
+        self._abort_vk_code: int = abort_vk_code
         self._lock: threading.Lock = threading.Lock()
         self._recording: bool = False
         self._recorded_actions: list[ActionNode] = []
@@ -114,7 +119,6 @@ class InputCaptureEngine:
                 )
                 self._recorded_actions.append(btn_action)
             else:
-                # Deduplicate stationary mouse moves
                 if (
                     self._recorded_actions
                     and isinstance(self._recorded_actions[-1], MouseMoveAction)
@@ -135,6 +139,10 @@ class InputCaptureEngine:
     def _on_keyboard_event(self, event: RawKeyboardEvent) -> None:
         with self._lock:
             if not self._recording:
+                return
+
+            # Prevent the hardware abort/kill-switch key from polluting the macro AST
+            if event.vk_code == self._abort_vk_code:
                 return
 
             self._append_delay_if_needed(event.timestamp_ns)

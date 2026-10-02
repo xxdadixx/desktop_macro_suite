@@ -1,11 +1,13 @@
 # pyright: reportUntypedBaseClass=false
 from __future__ import annotations
 
+import base64
 from enum import StrEnum
+from pathlib import Path
 from typing import Final, override
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QKeySequence, QMouseEvent, QShortcut
+from PySide6.QtGui import QImage, QKeySequence, QMouseEvent, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -26,6 +28,8 @@ from PySide6.QtWidgets import (
 
 from src.core.ast import (
     ActionNode,
+    CvBranchCase,
+    CvMultiTriggerAction,
     CvTriggerAction,
     DelayAction,
     KeyboardKeyAction,
@@ -38,11 +42,13 @@ from src.core.enums import (
     ButtonState,
     CvFailurePolicy,
     CvMouseAction,
+    CvSelectionStrategy,
     KeyState,
     LoopType,
     MouseButton,
     TriggerComparison,
 )
+from src.vision.matcher import MatchResult
 
 __all__: Final[list[str]] = ["ActionInspectorView", "CoordinatePickButton"]
 
@@ -97,6 +103,8 @@ class ActionInspectorView(QWidget):
     action_created: Signal = Signal(object)
     request_cv_capture: Signal = Signal()
     request_coordinate_pick: Signal = Signal()
+    request_test_cv: Signal = Signal(object)
+    request_locate_crop: Signal = Signal(int, int, int, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -143,6 +151,7 @@ class ActionInspectorView(QWidget):
         self._build_keyboard_key_page()
         self._build_delay_page()
         self._build_cv_trigger_page()
+        self._build_cv_multi_trigger_page()
         self._build_loop_container_page()
 
         self._btn_save: QPushButton = QPushButton("Apply Changes (Ctrl+Enter)")
@@ -358,7 +367,62 @@ class ActionInspectorView(QWidget):
 
     def _build_cv_trigger_page(self) -> None:
         self._page_cv: QWidget = QWidget(self._stack)
-        layout = QFormLayout(self._page_cv)
+        layout = QVBoxLayout(self._page_cv)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(6)
+
+        preview_box = QGroupBox("Template Image & Source Region", self._page_cv)
+        preview_layout = QVBoxLayout(preview_box)
+        preview_layout.setContentsMargins(6, 6, 6, 6)
+        preview_layout.setSpacing(4)
+
+        self._cv_preview_img: QLabel = QLabel(preview_box)
+        self._cv_preview_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cv_preview_img.setStyleSheet(
+            "background-color: #12151A; border: 1px solid #282C34; border-radius: 4px; min-height: 85px;"
+        )
+        preview_layout.addWidget(self._cv_preview_img)
+
+        self._cv_preview_meta: QLabel = QLabel("No template loaded", preview_box)
+        self._cv_preview_meta.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cv_preview_meta.setStyleSheet("color: #00E676; font-size: 11px; font-weight: bold;")
+        preview_layout.addWidget(self._cv_preview_meta)
+
+        self._cv_crop_meta: QLabel = QLabel("Crop Area: Unknown", preview_box)
+        self._cv_crop_meta.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cv_crop_meta.setStyleSheet("color: #8B949E; font-size: 10px;")
+        preview_layout.addWidget(self._cv_crop_meta)
+
+        self._cv_btn_locate_crop: QPushButton = QPushButton("📍 Locate Crop Area on Screen", preview_box)
+        self._cv_btn_locate_crop.setStyleSheet("background-color: #0277BD; font-weight: bold; padding: 4px;")
+        self._cv_btn_locate_crop.clicked.connect(self._on_locate_crop_clicked)
+        preview_layout.addWidget(self._cv_btn_locate_crop)
+
+        layout.addWidget(preview_box)
+
+        test_box = QGroupBox("Pre-Execution Verification", self._page_cv)
+        test_layout = QVBoxLayout(test_box)
+        test_layout.setContentsMargins(6, 6, 6, 6)
+        test_layout.setSpacing(4)
+
+        self._cv_btn_test_match: QPushButton = QPushButton("🧪 Test Match on Screen", test_box)
+        self._cv_btn_test_match.setStyleSheet("background-color: #00897B; font-weight: bold; padding: 6px;")
+        self._cv_btn_test_match.setToolTip("Test CV template matching against the active screen right now")
+        self._cv_btn_test_match.clicked.connect(self._on_test_cv_clicked)
+        test_layout.addWidget(self._cv_btn_test_match)
+
+        self._cv_test_feedback: QLabel = QLabel("Ready to test live match", test_box)
+        self._cv_test_feedback.setWordWrap(True)
+        self._cv_test_feedback.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cv_test_feedback.setStyleSheet(
+            "font-size: 10px; color: #8B949E; padding: 4px; border: 1px dashed #3E4451; border-radius: 4px;"
+        )
+        test_layout.addWidget(self._cv_test_feedback)
+
+        layout.addWidget(test_box)
+
+        form_layout = QFormLayout()
+        form_layout.setContentsMargins(2, 2, 2, 2)
 
         self._cv_template_edit: QLineEdit = QLineEdit()
         self._cv_confidence_spin: QDoubleSpinBox = QDoubleSpinBox()
@@ -394,15 +458,83 @@ class ActionInspectorView(QWidget):
         self._cv_offset_y_spin.setRange(-2000, 2000)
         self._cv_offset_y_spin.setSuffix(" px")
 
-        layout.addRow("Template:", self._cv_template_edit)
-        layout.addRow("Flow Policy:", self._cv_policy_combo)
-        layout.addRow("Condition:", self._cv_comparison_combo)
-        layout.addRow("Target Action:", self._cv_mouse_action_combo)
-        layout.addRow("Confidence:", self._cv_confidence_spin)
-        layout.addRow("Timeout:", self._cv_timeout_spin)
-        layout.addRow("Offset X:", self._cv_offset_x_spin)
-        layout.addRow("Offset Y:", self._cv_offset_y_spin)
+        form_layout.addRow("Template File:", self._cv_template_edit)
+        form_layout.addRow("Flow Policy:", self._cv_policy_combo)
+        form_layout.addRow("Condition:", self._cv_comparison_combo)
+        form_layout.addRow("Target Action:", self._cv_mouse_action_combo)
+        form_layout.addRow("Confidence:", self._cv_confidence_spin)
+        form_layout.addRow("Timeout:", self._cv_timeout_spin)
+        form_layout.addRow("Offset X:", self._cv_offset_x_spin)
+        form_layout.addRow("Offset Y:", self._cv_offset_y_spin)
+
+        layout.addLayout(form_layout)
         self._stack.addWidget(self._page_cv)
+
+    def _build_cv_multi_trigger_page(self) -> None:
+        self._page_cv_multi: QWidget = QWidget(self._stack)
+        layout = QVBoxLayout(self._page_cv_multi)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(6)
+
+        info_box = QGroupBox("Multi-Target Candidate Pool", self._page_cv_multi)
+        info_layout = QVBoxLayout(info_box)
+        info_layout.setContentsMargins(6, 6, 6, 6)
+        info_layout.setSpacing(4)
+
+        self._cv_multi_status_label: QLabel = QLabel("0 candidate targets registered", info_box)
+        self._cv_multi_status_label.setStyleSheet("color: #00E676; font-size: 11px; font-weight: bold;")
+        info_layout.addWidget(self._cv_multi_status_label)
+
+        self._cv_multi_candidates_label: QLabel = QLabel("", info_box)
+        self._cv_multi_candidates_label.setWordWrap(True)
+        self._cv_multi_candidates_label.setStyleSheet("color: #8B949E; font-size: 10px;")
+        info_layout.addWidget(self._cv_multi_candidates_label)
+
+        layout.addWidget(info_box)
+
+        test_box = QGroupBox("Pre-Execution Verification", self._page_cv_multi)
+        test_layout = QVBoxLayout(test_box)
+        test_layout.setContentsMargins(6, 6, 6, 6)
+        test_layout.setSpacing(4)
+
+        self._cv_multi_btn_test: QPushButton = QPushButton("🧪 Test Multi-Match on Screen", test_box)
+        self._cv_multi_btn_test.setStyleSheet("background-color: #00897B; font-weight: bold; padding: 6px;")
+        self._cv_multi_btn_test.setToolTip("Evaluate all candidate targets simultaneously against the live screen")
+        self._cv_multi_btn_test.clicked.connect(self._on_test_cv_multi_clicked)
+        test_layout.addWidget(self._cv_multi_btn_test)
+
+        self._cv_multi_test_feedback: QLabel = QLabel("Ready to test candidate pool", test_box)
+        self._cv_multi_test_feedback.setWordWrap(True)
+        self._cv_multi_test_feedback.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cv_multi_test_feedback.setStyleSheet(
+            "font-size: 10px; color: #8B949E; padding: 4px; border: 1px dashed #3E4451; border-radius: 4px;"
+        )
+        test_layout.addWidget(self._cv_multi_test_feedback)
+
+        layout.addWidget(test_box)
+
+        form_layout = QFormLayout()
+        form_layout.setContentsMargins(2, 2, 2, 2)
+
+        self._cv_multi_strategy_combo: QComboBox = QComboBox()
+        self._cv_multi_strategy_combo.addItem("First Match (Priority Order)", CvSelectionStrategy.FIRST_MATCH)
+        self._cv_multi_strategy_combo.addItem("Best Confidence Across All", CvSelectionStrategy.BEST_CONFIDENCE)
+
+        self._cv_multi_policy_combo: QComboBox = QComboBox()
+        self._cv_multi_policy_combo.addItem("if vision.match_any() ... else: pass [If Condition]", CvFailurePolicy.SKIP)
+        self._cv_multi_policy_combo.addItem("if not vision.match_any(): break [Break Loop]", CvFailurePolicy.BREAK_LOOP)
+        self._cv_multi_policy_combo.addItem("assert vision.match_any() [Assert / Wait]", CvFailurePolicy.ABORT)
+
+        self._cv_multi_timeout_spin: QDoubleSpinBox = QDoubleSpinBox()
+        self._cv_multi_timeout_spin.setRange(0.1, 3600.0)
+        self._cv_multi_timeout_spin.setSuffix(" s")
+
+        form_layout.addRow("Selection Strategy:", self._cv_multi_strategy_combo)
+        form_layout.addRow("Flow Policy:", self._cv_multi_policy_combo)
+        form_layout.addRow("Timeout Limit:", self._cv_multi_timeout_spin)
+
+        layout.addLayout(form_layout)
+        self._stack.addWidget(self._page_cv_multi)
 
     def _on_cv_mouse_action_changed(self) -> None:
         """Enables or disables offset inputs depending on whether a cursor action is active."""
@@ -411,11 +543,182 @@ class ActionInspectorView(QWidget):
         self._cv_offset_x_spin.setEnabled(has_mouse)
         self._cv_offset_y_spin.setEnabled(has_mouse)
 
-    def _on_cv_click_toggled(self, checked: bool) -> None:
-        self._cv_button_combo.setEnabled(checked)
-        self._cv_state_combo.setEnabled(checked)
-        self._cv_offset_x_spin.setEnabled(checked)
-        self._cv_offset_y_spin.setEnabled(checked)
+    def _on_locate_crop_clicked(self) -> None:
+        if isinstance(self._current_action, CvTriggerAction):
+            c = self._current_action
+            if (
+                c.crop_x is not None
+                and c.crop_y is not None
+                and c.crop_width is not None
+                and c.crop_height is not None
+            ):
+                self.request_locate_crop.emit(c.crop_x, c.crop_y, c.crop_width, c.crop_height)
+
+    def _on_test_cv_clicked(self) -> None:
+        if not isinstance(self._current_action, CvTriggerAction):
+            return
+
+        pol = _coerce_enum(self._cv_policy_combo.currentData(), CvFailurePolicy) or CvFailurePolicy.ABORT
+        comp = _coerce_enum(self._cv_comparison_combo.currentData(), TriggerComparison) or TriggerComparison.APPEARS
+        mouse_act = _coerce_enum(self._cv_mouse_action_combo.currentData(), CvMouseAction) or CvMouseAction.CLICK
+
+        new_template_path: str = self._cv_template_edit.text().strip()
+        retained_base64: str = (
+            self._current_action.image_base64
+            if not new_template_path or new_template_path == self._current_action.template_path
+            else ""
+        )
+
+        test_action = CvTriggerAction(
+            id=self._current_action.id,
+            description=self._current_action.description,
+            enabled=self._current_action.enabled,
+            template_path=new_template_path,
+            image_base64=retained_base64,
+            confidence_threshold=self._cv_confidence_spin.value(),
+            timeout_seconds=self._cv_timeout_spin.value(),
+            comparison=comp,
+            failure_policy=pol,
+            mouse_action=mouse_act,
+            offset_x=self._cv_offset_x_spin.value(),
+            offset_y=self._cv_offset_y_spin.value(),
+            crop_x=self._current_action.crop_x,
+            crop_y=self._current_action.crop_y,
+            crop_width=self._current_action.crop_width,
+            crop_height=self._current_action.crop_height,
+        )
+
+        self._cv_test_feedback.setText("Scanning display surface...")
+        self.request_test_cv.emit(test_action)
+
+    def _on_test_cv_multi_clicked(self) -> None:
+        if not isinstance(self._current_action, CvMultiTriggerAction):
+            return
+
+        strat = (
+            _coerce_enum(self._cv_multi_strategy_combo.currentData(), CvSelectionStrategy)
+            or CvSelectionStrategy.FIRST_MATCH
+        )
+        pol = _coerce_enum(self._cv_multi_policy_combo.currentData(), CvFailurePolicy) or CvFailurePolicy.SKIP
+
+        test_action = CvMultiTriggerAction(
+            id=self._current_action.id,
+            description=self._current_action.description,
+            enabled=self._current_action.enabled,
+            timeout_seconds=self._cv_multi_timeout_spin.value(),
+            strategy=strat,
+            failure_policy=pol,
+            branches=self._current_action.branches,
+        )
+
+        self._cv_multi_test_feedback.setText("Scanning display surface for candidate pool...")
+        self.request_test_cv.emit(test_action)
+
+    def display_cv_test_result(self, result: MatchResult, threshold: float) -> None:
+        """Formats and renders visual match feedback in the inspector card."""
+        pct = result.confidence * 100.0
+        thresh_pct = threshold * 100.0
+
+        if result.found and result.center is not None:
+            self._cv_test_feedback.setStyleSheet(
+                "font-size: 10px; color: #00E676; font-weight: bold; padding: 4px; "
+                "border: 1px solid #00E676; border-radius: 4px; background: rgba(0, 230, 118, 0.08);"
+            )
+            self._cv_test_feedback.setText(
+                f"✓ MATCHED! Confidence: {pct:.1f}% (Min: {thresh_pct:.1f}%)\n"
+                f"Center: ({result.center[0]}, {result.center[1]})"
+            )
+        else:
+            self._cv_test_feedback.setStyleSheet(
+                "font-size: 10px; color: #FF5252; font-weight: bold; padding: 4px; "
+                "border: 1px solid #FF5252; border-radius: 4px; background: rgba(255, 82, 82, 0.08);"
+            )
+            self._cv_test_feedback.setText(
+                f"✗ NOT FOUND. Peak Confidence: {pct:.1f}% (Required: {thresh_pct:.1f}%)\n"
+                "Tip: Lower threshold or recreate template."
+            )
+
+    def display_cv_multi_test_result(
+        self,
+        matched_branch: CvBranchCase | None,
+        result: MatchResult | None,
+    ) -> None:
+        """Formats and renders visual multi-match feedback in the inspector card."""
+        if matched_branch is not None and result is not None and result.found and result.center is not None:
+            pct = result.confidence * 100.0
+            self._cv_multi_test_feedback.setStyleSheet(
+                "font-size: 10px; color: #00E676; font-weight: bold; padding: 4px; "
+                "border: 1px solid #00E676; border-radius: 4px; background: rgba(0, 230, 118, 0.08);"
+            )
+            self._cv_multi_test_feedback.setText(
+                f"✓ MATCHED: '{matched_branch.name}'!\nConfidence: {pct:.1f}%\n"
+                f"Center: ({result.center[0]}, {result.center[1]})"
+            )
+        else:
+            self._cv_multi_test_feedback.setStyleSheet(
+                "font-size: 10px; color: #FF5252; font-weight: bold; padding: 4px; "
+                "border: 1px solid #FF5252; border-radius: 4px; background: rgba(255, 82, 82, 0.08);"
+            )
+            self._cv_multi_test_feedback.setText(
+                "✗ NO CANDIDATES MATCHED.\n"
+                "Tip: Check template visibility or lower threshold."
+            )
+
+    def _update_cv_preview(self, action: CvTriggerAction) -> None:
+        """Decodes template payload and populates thumbnail preview and geometry HUD."""
+        pixmap: QPixmap | None = None
+
+        if action.image_base64.strip():
+            try:
+                cleaned = action.image_base64.strip()
+                if cleaned.startswith("data:") and "," in cleaned:
+                    cleaned = cleaned.split(",", 1)[1].strip()
+                raw_bytes = base64.b64decode(cleaned)
+                qimage = QImage.fromData(raw_bytes)
+                if not qimage.isNull():
+                    pixmap = QPixmap.fromImage(qimage)
+            except Exception:
+                pixmap = None
+
+        if pixmap is None and action.template_path.strip():
+            candidate_path = Path(action.template_path.strip())
+            if candidate_path.is_file():
+                pix = QPixmap(str(candidate_path))
+                if not pix.isNull():
+                    pixmap = pix
+
+        if pixmap is not None:
+            scaled = pixmap.scaled(
+                200,
+                85,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self._cv_preview_img.setPixmap(scaled)
+            source_desc = "In-Memory Embedded" if action.image_base64 else "File System"
+            self._cv_preview_meta.setText(f"{pixmap.width()} × {pixmap.height()} px [{source_desc}]")
+        else:
+            self._cv_preview_img.setText("No Preview Available")
+            self._cv_preview_meta.setText("Template image not found")
+
+        if (
+            action.crop_x is not None
+            and action.crop_y is not None
+            and action.crop_width is not None
+            and action.crop_height is not None
+        ):
+            self._cv_crop_meta.setText(
+                f"Original Crop: ({action.crop_x}, {action.crop_y}) [{action.crop_width}×{action.crop_height} px]"
+            )
+            self._cv_btn_locate_crop.setEnabled(True)
+        else:
+            self._cv_crop_meta.setText("Original Crop: Location not recorded")
+            self._cv_btn_locate_crop.setEnabled(False)
+
+        self._cv_test_feedback.setStyleSheet(
+            "font-size: 10px; color: #8B949E; padding: 4px; border: 1px dashed #3E4451; border-radius: 4px;"
+        )
+        self._cv_test_feedback.setText("Ready to test live match")
 
     def _build_loop_container_page(self) -> None:
         self._page_loop: QWidget = QWidget(self._stack)
@@ -552,7 +855,31 @@ class ActionInspectorView(QWidget):
                 self._cv_offset_x_spin.setValue(c.offset_x)
                 self._cv_offset_y_spin.setValue(c.offset_y)
                 self._on_cv_mouse_action_changed()
+                self._update_cv_preview(c)
                 self._stack.setCurrentWidget(self._page_cv)
+
+            case CvMultiTriggerAction() as m:
+                self._cv_multi_timeout_spin.setValue(m.timeout_seconds)
+
+                for i in range(self._cv_multi_strategy_combo.count()):
+                    if self._cv_multi_strategy_combo.itemData(i) == m.strategy:
+                        self._cv_multi_strategy_combo.setCurrentIndex(i)
+                        break
+
+                for i in range(self._cv_multi_policy_combo.count()):
+                    if self._cv_multi_policy_combo.itemData(i) == m.failure_policy:
+                        self._cv_multi_policy_combo.setCurrentIndex(i)
+                        break
+
+                count = len(m.branches)
+                self._cv_multi_status_label.setText(f"{count} candidate target{'s' if count != 1 else ''} registered")
+                names = [f"• {b.name} (min {b.confidence_threshold:.2f})" for b in m.branches]
+                self._cv_multi_candidates_label.setText("\n".join(names) if names else "No targets defined.")
+                self._cv_multi_test_feedback.setStyleSheet(
+                    "font-size: 10px; color: #8B949E; padding: 4px; border: 1px dashed #3E4451; border-radius: 4px;"
+                )
+                self._cv_multi_test_feedback.setText("Ready to test candidate pool")
+                self._stack.setCurrentWidget(self._page_cv_multi)
 
             case LoopContainerAction() as lp:
                 target_val = lp.loop_type.value
@@ -575,6 +902,9 @@ class ActionInspectorView(QWidget):
                 self._loop_timeout_spin.setValue(lp.timeout_seconds)
                 self._on_loop_type_changed()
                 self._stack.setCurrentWidget(self._page_loop)
+
+            case _:
+                pass
 
     def set_target_coordinates(self, x: int, y: int) -> None:
         """Assigns picked coordinates directly into active action parameters and commits updates."""
@@ -635,12 +965,14 @@ class ActionInspectorView(QWidget):
             case KeyboardKeyAction() as k:
                 kstate_item = _coerce_enum(self._key_state_combo.currentData(), KeyState)
                 if kstate_item is not None:
+                    new_vk: int = self._key_vk_spin.value()
+                    new_scan: int = k.scan_code if new_vk == k.vk_code else 0
                     updated = KeyboardKeyAction(
                         id=k.id,
                         description=k.description,
                         enabled=k.enabled,
-                        vk_code=self._key_vk_spin.value(),
-                        scan_code=k.scan_code,
+                        vk_code=new_vk,
+                        scan_code=new_scan,
                         state=kstate_item,
                         is_extended=k.is_extended,
                         key_name=self._key_name_edit.text(),
@@ -658,12 +990,19 @@ class ActionInspectorView(QWidget):
                 comp = _coerce_enum(self._cv_comparison_combo.currentData(), TriggerComparison) or TriggerComparison.APPEARS
                 mouse_act = _coerce_enum(self._cv_mouse_action_combo.currentData(), CvMouseAction) or CvMouseAction.CLICK
 
+                new_template_path: str = self._cv_template_edit.text().strip()
+                retained_base64: str = (
+                    c.image_base64
+                    if not new_template_path or new_template_path == c.template_path
+                    else ""
+                )
+
                 updated = CvTriggerAction(
                     id=c.id,
                     description=c.description,
                     enabled=c.enabled,
-                    template_path=self._cv_template_edit.text(),
-                    image_base64=c.image_base64,
+                    template_path=new_template_path,
+                    image_base64=retained_base64,
                     confidence_threshold=self._cv_confidence_spin.value(),
                     timeout_seconds=self._cv_timeout_spin.value(),
                     comparison=comp,
@@ -671,10 +1010,37 @@ class ActionInspectorView(QWidget):
                     mouse_action=mouse_act,
                     offset_x=self._cv_offset_x_spin.value(),
                     offset_y=self._cv_offset_y_spin.value(),
+                    crop_x=c.crop_x,
+                    crop_y=c.crop_y,
+                    crop_width=c.crop_width,
+                    crop_height=c.crop_height,
+                )
+            case CvMultiTriggerAction() as m:
+                strat = (
+                    _coerce_enum(self._cv_multi_strategy_combo.currentData(), CvSelectionStrategy)
+                    or CvSelectionStrategy.FIRST_MATCH
+                )
+                pol = _coerce_enum(self._cv_multi_policy_combo.currentData(), CvFailurePolicy) or CvFailurePolicy.SKIP
+
+                updated = CvMultiTriggerAction(
+                    id=m.id,
+                    description=m.description,
+                    enabled=m.enabled,
+                    timeout_seconds=self._cv_multi_timeout_spin.value(),
+                    strategy=strat,
+                    failure_policy=pol,
+                    branches=m.branches,
                 )
             case LoopContainerAction() as lp:
                 selected_type = _coerce_enum(self._loop_type_combo.currentData(), LoopType)
                 if selected_type is not None:
+                    new_loop_template: str = self._loop_template_edit.text().strip()
+                    retained_lp_base64: str = (
+                        lp.image_base64
+                        if not new_loop_template or new_loop_template == lp.template_path
+                        else ""
+                    )
+
                     updated = LoopContainerAction(
                         id=lp.id,
                         description=lp.description,
@@ -682,12 +1048,14 @@ class ActionInspectorView(QWidget):
                         loop_type=selected_type,
                         iterations=self._loop_iterations_spin.value(),
                         duration_seconds=self._loop_duration_spin.value(),
-                        template_path=self._loop_template_edit.text(),
-                        image_base64=lp.image_base64,
+                        template_path=new_loop_template,
+                        image_base64=retained_lp_base64,
                         confidence_threshold=self._loop_confidence_spin.value(),
                         timeout_seconds=self._loop_timeout_spin.value(),
                         actions=lp.actions,
                     )
+            case _:
+                pass
 
         if updated is not None:
             self._current_action = updated

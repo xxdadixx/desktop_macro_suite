@@ -42,8 +42,8 @@ class Rect2D:
 class MatchResult:
     found: bool
     confidence: float
-    bounding_box: Rect2D
-    center: Point2D
+    region: Rect2D | None = None
+    center: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)

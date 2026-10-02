@@ -7,6 +7,8 @@ from typing import Final
 from .ast import (
     ActionNode,
     BaseAction,
+    CvBranchCase,
+    CvMultiTriggerAction,
     CvTriggerAction,
     DelayAction,
     KeyboardKeyAction,
@@ -21,6 +23,7 @@ from .enums import (
     ButtonState,
     CvFailurePolicy,
     CvMouseAction,
+    CvSelectionStrategy,
     ExecutionState,
     KeyState,
     LoopType,
@@ -79,6 +82,8 @@ __all__: Final[list[str]] = [
     # AST Models & Discriminator Union
     "ActionNode",
     "BaseAction",
+    "CvBranchCase",
+    "CvMultiTriggerAction",
     "CvTriggerAction",
     "DelayAction",
     "KeyboardKeyAction",
@@ -92,6 +97,7 @@ __all__: Final[list[str]] = [
     "ButtonState",
     "CvFailurePolicy",
     "CvMouseAction",
+    "CvSelectionStrategy",
     "ExecutionState",
     "KeyState",
     "LoopType",

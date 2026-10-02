@@ -88,6 +88,10 @@ class TemplateMatcher:
         if not cleaned_b64:
             raise ValueError("Base64 template data cannot be empty.")
 
+        # Strip RFC 2397 Data URI headers if present
+        if cleaned_b64.startswith("data:") and "," in cleaned_b64:
+            cleaned_b64 = cleaned_b64.split(",", 1)[1].strip()
+
         cache_key = self._hash_payload(cleaned_b64)
         cached = self._template_cache.get(cache_key)
         if cached is not None:
@@ -127,24 +131,26 @@ class TemplateMatcher:
             if not clean_str:
                 raise ValueError("Template target identifier or Base64 payload cannot be empty.")
 
-            # Explicit disambiguation: test filesystem resolution before Base64 fallback
-            path_candidate = Path(clean_str)
-            if path_candidate.is_file():
-                _, template_gray = self.load_template(path_candidate)
-            elif clean_str.startswith("iVBORw0KGgo") or (len(clean_str) > 260 and "/" not in clean_str and "\\" not in clean_str):
+            # Identify and decode Data URI schemes directly
+            if clean_str.startswith("data:") and "," in clean_str:
                 _, template_gray = self.load_from_base64(clean_str)
             else:
-                # If path candidate does not exist and doesn't match base64 characteristics, fail explicitly
-                if any(sep in clean_str for sep in ("/", "\\", ".")):
-                    raise FileNotFoundError(f"Template image file not found at '{clean_str}'")
-                _, template_gray = self.load_from_base64(clean_str)
+                path_candidate = Path(clean_str)
+                if path_candidate.is_file():
+                    _, template_gray = self.load_template(path_candidate)
+                elif clean_str.startswith("iVBORw0KGgo") or len(clean_str) > 260:
+                    _, template_gray = self.load_from_base64(clean_str)
+                else:
+                    if any(sep in clean_str for sep in ("/", "\\", ".")):
+                        raise FileNotFoundError(f"Template image file not found at '{clean_str}'")
+                    _, template_gray = self.load_from_base64(clean_str)
 
             template_h, template_w = int(template_gray.shape[0]), int(template_gray.shape[1])
         else:
             if template.ndim == 3:
-                template_gray = cv2.cvtColor(template, CV_COLOR_BGR2GRAY)
+                template_gray = np.ascontiguousarray(cv2.cvtColor(template, CV_COLOR_BGR2GRAY))
             else:
-                template_gray = template
+                template_gray = np.ascontiguousarray(template)
             template_h, template_w = int(template.shape[0]), int(template.shape[1])
 
         haystack_h: int = int(haystack.shape[0])
@@ -153,7 +159,7 @@ class TemplateMatcher:
         if template_w > haystack_w or template_h > haystack_h:
             return MatchResult(found=False, confidence=0.0)
 
-        haystack_gray: ImageBuffer = (
+        haystack_gray: ImageBuffer = np.ascontiguousarray(
             cv2.cvtColor(haystack, CV_COLOR_BGR2GRAY)
             if haystack.ndim == 3
             else haystack

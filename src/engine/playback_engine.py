@@ -5,11 +5,13 @@ from ctypes import wintypes
 import logging
 import random
 import sys
+import threading
 import time
 from typing import Final
 
 from src.core.ast import (
     ActionNode,
+    CvMultiTriggerAction,
     CvTriggerAction,
     DelayAction,
     KeyboardKeyAction,
@@ -60,7 +62,7 @@ class _BreakLoopSignal(Exception):
 
 
 class MacroPlaybackEngine:
-    """Executes MacroSequence AST nodes sequentially with sub-millisecond hardware dispatch and full trace logging."""
+    """Executes MacroSequence AST nodes sequentially with sub-millisecond hardware dispatch, trace logging, and reentrancy safety."""
 
     def __init__(
         self,
@@ -71,6 +73,7 @@ class MacroPlaybackEngine:
         self._synthesizer: InputSynthesizerProtocol = synthesizer
         self._token: CancellationTokenProtocol | None = cancellation_token
         self._visual_evaluator: VisualTriggerEvaluator | None = visual_evaluator
+        self._execution_lock: threading.Lock = threading.Lock()
         self._current_mouse_x: int = 0
         self._current_mouse_y: int = 0
         self._sync_cursor_position()
@@ -95,62 +98,81 @@ class MacroPlaybackEngine:
         repeat_count: int = 1,
         telemetry_callback: ExecutionTelemetryCallback | None = None,
     ) -> None:
-        """Executes the macro sequence with end-to-end operation tracing."""
-        self._sync_cursor_position()
-        total_actions: int = len(sequence.actions)
-        iter_display: str = f"{repeat_count}" if repeat_count > 0 else "∞"
-        logger.info(
-            "Starting execution of '%s' [%d actions, %s iteration(s)]",
-            sequence.name,
-            total_actions,
-            iter_display,
-        )
+        """Executes the macro sequence with reentrancy protection and end-to-end operation tracing."""
+        if not self._execution_lock.acquire(blocking=False):
+            raise ExecutionError(
+                f"Cannot execute '{sequence.name}': Playback engine is already actively executing a sequence."
+            )
 
-        iteration: int = 0
-        start_sequence_epoch: float = time.monotonic()
+        try:
+            self._sync_cursor_position()
+            total_actions: int = len(sequence.actions)
+            iter_display: str = f"{repeat_count}" if repeat_count > 0 else "∞"
+            logger.info(
+                "Starting execution of '%s' [%d actions, %s iteration(s)]",
+                sequence.name,
+                total_actions,
+                iter_display,
+            )
 
-        while repeat_count <= 0 or iteration < repeat_count:
-            self._check_cancellation()
-            logger.info("--- Beginning iteration %d/%s ---", iteration + 1, iter_display)
+            iteration: int = 0
+            start_sequence_epoch: float = time.monotonic()
 
-            for step_idx, action in enumerate(sequence.actions, start=1):
+            while repeat_count <= 0 or iteration < repeat_count:
                 self._check_cancellation()
-                if not action.enabled:
-                    logger.debug(
-                        "Step [%d/%d] Action '%s' (%s) is disabled. Skipping.",
+                logger.info("--- Beginning iteration %d/%s ---", iteration + 1, iter_display)
+
+                for step_idx, action in enumerate(sequence.actions, start=1):
+                    self._check_cancellation()
+                    if not action.enabled:
+                        logger.debug(
+                            "Step [%d/%d] Action '%s' (%s) is disabled. Skipping.",
+                            step_idx,
+                            total_actions,
+                            action.id[:8],
+                            action.action_type.value,
+                        )
+                        continue
+
+                    logger.info(
+                        "Step [%d/%d] Executing %s (ID: %s)",
                         step_idx,
                         total_actions,
+                        action.action_type.value.upper(),
                         action.id[:8],
-                        action.action_type.value,
                     )
-                    continue
 
-                start_epoch = time.monotonic()
-                logger.info(
-                    "Step [%d/%d] Executing %s (ID: %s)",
-                    step_idx,
-                    total_actions,
-                    action.action_type.value.upper(),
-                    action.id[:8],
-                )
+                    self._execute_action_with_telemetry(action, telemetry_callback)
 
-                self.execute_action(action)
-                elapsed_ms: float = (time.monotonic() - start_epoch) * 1000.0
+                iteration += 1
 
-                if telemetry_callback is not None:
-                    telemetry_callback(action.id, elapsed_ms)
+            total_elapsed: float = time.monotonic() - start_sequence_epoch
+            logger.info(
+                "Playback completed successfully for '%s' in %.2fs (%d iteration(s)).",
+                sequence.name,
+                total_elapsed,
+                iteration,
+            )
+        finally:
+            self._execution_lock.release()
 
-            iteration += 1
+    def _execute_action_with_telemetry(
+        self,
+        node: ActionNode,
+        telemetry_callback: ExecutionTelemetryCallback | None,
+    ) -> None:
+        start_epoch: float = time.monotonic()
+        self.execute_action(node, telemetry_callback=telemetry_callback)
+        elapsed_ms: float = (time.monotonic() - start_epoch) * 1000.0
 
-        total_elapsed: float = time.monotonic() - start_sequence_epoch
-        logger.info(
-            "Playback completed successfully for '%s' in %.2fs (%d iteration(s)).",
-            sequence.name,
-            total_elapsed,
-            iteration,
-        )
+        if telemetry_callback is not None:
+            telemetry_callback(node.id, elapsed_ms)
 
-    def execute_action(self, node: ActionNode) -> None:
+    def execute_action(
+        self,
+        node: ActionNode,
+        telemetry_callback: ExecutionTelemetryCallback | None = None,
+    ) -> None:
         """Evaluates and dispatches a single AST action node exhaustively with trace logs."""
         self._check_cancellation()
         if not node.enabled:
@@ -168,9 +190,11 @@ class MacroPlaybackEngine:
             case DelayAction() as action:
                 self._execute_delay(action)
             case LoopContainerAction() as action:
-                self._execute_loop(action)
+                self._execute_loop(action, telemetry_callback=telemetry_callback)
             case CvTriggerAction() as action:
                 self._execute_cv_trigger(action)
+            case CvMultiTriggerAction() as action:
+                self._execute_cv_multi_trigger(action, telemetry_callback=telemetry_callback)
 
     def _check_cancellation(self) -> None:
         if self._token is not None:
@@ -278,7 +302,11 @@ class MacroPlaybackEngine:
         logger.info("Executing delay: %.1fms%s", effective_delay, jitter_str)
         PreciseTimer.sleep_ms(effective_delay, self._token)
 
-    def _execute_loop(self, action: LoopContainerAction) -> None:
+    def _execute_loop(
+        self,
+        action: LoopContainerAction,
+        telemetry_callback: ExecutionTelemetryCallback | None = None,
+    ) -> None:
         logger.info(
             "Entering Loop block '%s' (type=%s, child_actions=%d)",
             action.id[:8],
@@ -293,7 +321,7 @@ class MacroPlaybackEngine:
                     logger.debug("Loop iteration [%d/%d]", cycle + 1, action.iterations)
                     try:
                         for child in action.actions:
-                            self.execute_action(child)
+                            self._execute_action_with_telemetry(child, telemetry_callback)
                     except _BreakLoopSignal:
                         logger.info("Loop break signal received. Exiting loop '%s'.", action.id[:8])
                         break
@@ -306,7 +334,7 @@ class MacroPlaybackEngine:
                     logger.debug("Infinite loop cycle #%d", cycle_count)
                     try:
                         for child in action.actions:
-                            self.execute_action(child)
+                            self._execute_action_with_telemetry(child, telemetry_callback)
                     except _BreakLoopSignal:
                         logger.info("Loop break signal received. Exiting infinite loop '%s'.", action.id[:8])
                         break
@@ -319,7 +347,7 @@ class MacroPlaybackEngine:
                     self._check_cancellation()
                     try:
                         for child in action.actions:
-                            self.execute_action(child)
+                            self._execute_action_with_telemetry(child, telemetry_callback)
                     except _BreakLoopSignal:
                         logger.info("Loop break signal received. Exiting duration loop '%s'.", action.id[:8])
                         break
@@ -351,7 +379,7 @@ class MacroPlaybackEngine:
 
                     try:
                         for child in action.actions:
-                            self.execute_action(child)
+                            self._execute_action_with_telemetry(child, telemetry_callback)
                     except _BreakLoopSignal:
                         break
 
@@ -383,7 +411,7 @@ class MacroPlaybackEngine:
 
                     try:
                         for child in action.actions:
-                            self.execute_action(child)
+                            self._execute_action_with_telemetry(child, telemetry_callback)
                     except _BreakLoopSignal:
                         break
 
@@ -437,42 +465,121 @@ class MacroPlaybackEngine:
                     )
                     raise _BreakLoopSignal()
 
-        # Target matched: dispatch physical cursor movement and clicking
         if match_res.found and match_res.center is not None:
-            target_x: int = match_res.center[0] + action.offset_x
-            target_y: int = match_res.center[1] + action.offset_y
-
-            logger.info(
-                "Visual target matched! Confidence: %.2f (center: %s, offset: [%+d, %+d] -> target: (%d, %d))",
-                match_res.confidence,
-                match_res.center,
-                action.offset_x,
-                action.offset_y,
-                target_x,
-                target_y,
+            self._dispatch_cv_interaction(
+                center=match_res.center,
+                offset_x=action.offset_x,
+                offset_y=action.offset_y,
+                mouse_action=action.mouse_action,
+                confidence=match_res.confidence,
             )
 
-            if action.mouse_action != CvMouseAction.NONE:
-                # 1. Physically move cursor to target coordinates
-                logger.info("Moving cursor to target coordinates: (%d, %d)", target_x, target_y)
-                self._synthesizer.send_mouse_move(target_x, target_y)
-                self._current_mouse_x = target_x
-                self._current_mouse_y = target_y
+    def _execute_cv_multi_trigger(
+        self,
+        action: CvMultiTriggerAction,
+        telemetry_callback: ExecutionTelemetryCallback | None = None,
+    ) -> None:
+        if self._visual_evaluator is None:
+            raise ExecutionError(
+                f"Cannot execute multi-target visual action '{action.id}': "
+                "VisualTriggerEvaluator is not initialized or injected."
+            )
 
-                # 2. Synthesize mouse button event based on selected action
-                match action.mouse_action:
-                    case CvMouseAction.CLICK:
-                        logger.info("Clicking target at (%d, %d) [LEFT CLICK]", target_x, target_y)
-                        self._synthesizer.send_mouse_button(MouseButton.LEFT, ButtonState.CLICK)
-                    case CvMouseAction.DOUBLE_CLICK:
-                        logger.info("Double-clicking target at (%d, %d)", target_x, target_y)
-                        self._synthesizer.send_mouse_button(MouseButton.LEFT, ButtonState.DOUBLE_CLICK)
-                    case CvMouseAction.RIGHT_CLICK:
-                        logger.info("Right-clicking target at (%d, %d)", target_x, target_y)
-                        self._synthesizer.send_mouse_button(MouseButton.RIGHT, ButtonState.CLICK)
-                    case CvMouseAction.MOVE_ONLY:
-                        logger.info("Cursor positioned at (%d, %d) [Move only]", target_x, target_y)
-            else:
-                # Update tracker coordinates without dispatching hardware input
-                self._current_mouse_x = target_x
-                self._current_mouse_y = target_y
+        logger.info(
+            "Evaluating multi-target visual pool [%d candidate(s)] (strategy=%s, policy=%s, timeout=%.1fs)",
+            len(action.branches),
+            action.strategy.value,
+            action.failure_policy.value,
+            action.timeout_seconds,
+        )
+
+        matched_branch, match_res = self._visual_evaluator.wait_for_multi_trigger(
+            action=action,
+            poll_interval_ms=CV_POLL_INTERVAL_MS,
+            cancellation_token=self._token,
+        )
+
+        if matched_branch is None or match_res is None or not match_res.found:
+            match action.failure_policy:
+                case CvFailurePolicy.ABORT:
+                    logger.error(
+                        "No visual candidates matched within %.1fs timeout. Policy=ABORT -> Raising MacroTimeoutError.",
+                        action.timeout_seconds,
+                    )
+                    raise MacroTimeoutError(action.id, action.timeout_seconds)
+                case CvFailurePolicy.SKIP:
+                    logger.warning(
+                        "No visual candidates matched within %.1fs timeout. Policy=SKIP -> Continuing sequence.",
+                        action.timeout_seconds,
+                    )
+                    return
+                case CvFailurePolicy.BREAK_LOOP:
+                    logger.warning(
+                        "No visual candidates matched within %.1fs timeout. Policy=BREAK_LOOP -> Breaking enclosing loop.",
+                        action.timeout_seconds,
+                    )
+                    raise _BreakLoopSignal()
+
+        logger.info(
+            "Multi-CV match confirmed: Branch '%s' (Confidence: %.2f)",
+            matched_branch.name,
+            match_res.confidence,
+        )
+
+        if match_res.center is not None and matched_branch.mouse_action != CvMouseAction.NONE:
+            self._dispatch_cv_interaction(
+                center=match_res.center,
+                offset_x=matched_branch.offset_x,
+                offset_y=matched_branch.offset_y,
+                mouse_action=matched_branch.mouse_action,
+                confidence=match_res.confidence,
+            )
+
+        if matched_branch.actions:
+            logger.info("Executing %d child action(s) for branch '%s'.", len(matched_branch.actions), matched_branch.name)
+            for child in matched_branch.actions:
+                self._execute_action_with_telemetry(child, telemetry_callback)
+
+    def _dispatch_cv_interaction(
+        self,
+        center: tuple[int, int],
+        offset_x: int,
+        offset_y: int,
+        mouse_action: CvMouseAction,
+        confidence: float,
+    ) -> None:
+        target_x: int = center[0] + offset_x
+        target_y: int = center[1] + offset_y
+
+        logger.info(
+            "Target location resolved! Confidence: %.2f (center: %s, offset: [%+d, %+d] -> target: (%d, %d))",
+            confidence,
+            center,
+            offset_x,
+            offset_y,
+            target_x,
+            target_y,
+        )
+
+        if mouse_action == CvMouseAction.NONE:
+            self._current_mouse_x = target_x
+            self._current_mouse_y = target_y
+            return
+
+        logger.info("Moving cursor to target coordinates: (%d, %d)", target_x, target_y)
+        self._synthesizer.send_mouse_move(target_x, target_y)
+        self._current_mouse_x = target_x
+        self._current_mouse_y = target_y
+
+        match mouse_action:
+            case CvMouseAction.CLICK:
+                logger.info("Clicking target at (%d, %d) [LEFT CLICK]", target_x, target_y)
+                self._synthesizer.send_mouse_button(MouseButton.LEFT, ButtonState.CLICK)
+            case CvMouseAction.DOUBLE_CLICK:
+                logger.info("Double-clicking target at (%d, %d)", target_x, target_y)
+                self._synthesizer.send_mouse_button(MouseButton.LEFT, ButtonState.DOUBLE_CLICK)
+            case CvMouseAction.RIGHT_CLICK:
+                logger.info("Right-clicking target at (%d, %d)", target_x, target_y)
+                self._synthesizer.send_mouse_button(MouseButton.RIGHT, ButtonState.CLICK)
+            case CvMouseAction.MOVE_ONLY:
+                logger.info("Cursor positioned at (%d, %d) [Move only]", target_x, target_y)

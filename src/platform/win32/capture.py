@@ -188,14 +188,14 @@ class Win32GdiCapture(FrameCaptureProtocol):
         if width <= 0 or height <= 0:
             raise FrameCaptureError(f"Invalid capture dimensions: width={width}, height={height}")
 
-        hwnd_desktop: int = _get_desktop_window()
-        hdc_screen: int = _get_dc(hwnd_desktop)
+        # GetDC(0) acquires the unified virtual desktop DC spanning all monitors
+        hdc_screen: int = _get_dc(0)
         if hdc_screen == 0:
-            raise FrameCaptureError("Failed to acquire desktop device context (GetDC)")
+            raise FrameCaptureError("Failed to acquire global virtual desktop device context (GetDC(0))")
 
         hdc_mem: int = _create_compatible_dc(hdc_screen)
         if hdc_mem == 0:
-            _ = _release_dc(hwnd_desktop, hdc_screen)
+            _ = _release_dc(0, hdc_screen)
             raise FrameCaptureError("Failed to create compatible memory DC (CreateCompatibleDC)")
 
         bmi = BITMAPINFO()
@@ -219,7 +219,7 @@ class Win32GdiCapture(FrameCaptureProtocol):
 
         if hbitmap == 0 or bits_ptr.value is None:
             _ = _delete_dc(hdc_mem)
-            _ = _release_dc(hwnd_desktop, hdc_screen)
+            _ = _release_dc(0, hdc_screen)
             raise FrameCaptureError("Failed to allocate DIB section bitmap (CreateDIBSection)")
 
         old_bmp: int = _select_object(hdc_mem, hbitmap)
@@ -251,4 +251,4 @@ class Win32GdiCapture(FrameCaptureProtocol):
             _ = _select_object(hdc_mem, old_bmp)
             _ = _delete_object(hbitmap)
             _ = _delete_dc(hdc_mem)
-            _ = _release_dc(hwnd_desktop, hdc_screen)
+            _ = _release_dc(0, hdc_screen)
