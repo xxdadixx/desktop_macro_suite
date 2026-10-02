@@ -1,7 +1,7 @@
 # pyright: reportUntypedBaseClass=false
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, override
 
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QKeyEvent, QMouseEvent, QPaintEvent, QPainter, QPen
@@ -40,6 +40,7 @@ class RoiSelectorOverlay(QWidget):
         self.showFullScreen()
         self.activateWindow()
 
+    @override
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._start_pos = event.pos()
@@ -49,11 +50,13 @@ class RoiSelectorOverlay(QWidget):
         elif event.button() == Qt.MouseButton.RightButton:
             self._cancel()
 
+    @override
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._is_selecting:
             self._current_pos = event.pos()
             self.update()
 
+    @override
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._is_selecting:
             self._is_selecting = False
@@ -74,6 +77,7 @@ class RoiSelectorOverlay(QWidget):
 
             self.selection_cancelled.emit()
 
+    @override
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self._cancel()
@@ -83,6 +87,7 @@ class RoiSelectorOverlay(QWidget):
         self.hide()
         self.selection_cancelled.emit()
 
+    @override
     def paintEvent(self, event: QPaintEvent) -> None:
         _ = event
         painter: QPainter = QPainter(self)

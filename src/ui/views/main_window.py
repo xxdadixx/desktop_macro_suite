@@ -16,7 +16,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.core.ast import CvTriggerAction
+from src.core.ast import (
+    CvTriggerAction,
+    DelayAction,
+    KeyboardKeyAction,
+    LoopContainerAction,
+    MouseButtonAction,
+    MouseMoveAction,
+    MouseScrollAction,
+)
 from src.core.serialization import MacroSerializer
 from src.core.types import Rect2D
 from src.ui.bridge import UIBridge
@@ -30,7 +38,7 @@ __all__: Final[list[str]] = ["MainWindow"]
 
 
 class MainWindow(QMainWindow):
-    """Primary application workstation interface."""
+    """Primary application workstation interface with clean transport and authoring split."""
 
     def __init__(
         self,
@@ -41,9 +49,10 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self._bridge: UIBridge = bridge
         self._model: ActionSequenceModel = model
+        self._current_file_path: str | None = None
 
-        self.setWindowTitle("Desktop Automation Suite")
-        self.resize(1100, 720)
+        self.setWindowTitle("Untitled Sequence - Desktop Automation Suite")
+        self.resize(1180, 750)
 
         # Central Splitter Layout
         splitter: QSplitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -52,8 +61,8 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(self._timeline)
         splitter.addWidget(self._inspector)
-        splitter.setStretchFactor(0, 7)
-        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(0, 6)
+        splitter.setStretchFactor(1, 4)
         self.setCentralWidget(splitter)
 
         # ROI Selector Tool Overlay
@@ -63,7 +72,7 @@ class MainWindow(QMainWindow):
         # Status Bar
         self._status_bar: QStatusBar = QStatusBar(self)
         self.setStatusBar(self._status_bar)
-        self._status_bar.showMessage("Engine initialized. Emergency Kill-Switch active (ESC).")
+        self._status_bar.showMessage("Engine initialized. Emergency Kill-Switch active (F12).")
 
         self._build_toolbars()
         self._wire_signals()
@@ -76,47 +85,61 @@ class MainWindow(QMainWindow):
         # File actions
         self._act_new: QAction = QAction("New", self)
         self._act_new.setShortcut(QKeySequence.StandardKey.New)
+        self._act_new.setToolTip("Create new sequence (Ctrl+N)")
         self._act_new.triggered.connect(self._on_new)
         toolbar.addAction(self._act_new)
 
         self._act_open: QAction = QAction("Open", self)
         self._act_open.setShortcut(QKeySequence.StandardKey.Open)
+        self._act_open.setToolTip("Open macro file (Ctrl+O)")
         self._act_open.triggered.connect(self._on_open)
         toolbar.addAction(self._act_open)
 
         self._act_save: QAction = QAction("Save", self)
         self._act_save.setShortcut(QKeySequence.StandardKey.Save)
+        self._act_save.setToolTip("Save macro sequence (Ctrl+S)")
         self._act_save.triggered.connect(self._on_save)
         toolbar.addAction(self._act_save)
 
+        self._act_save_as: QAction = QAction("Save As...", self)
+        self._act_save_as.setShortcut(QKeySequence.StandardKey.SaveAs)
+        self._act_save_as.setToolTip("Save macro sequence under new file path (Ctrl+Shift+S)")
+        self._act_save_as.triggered.connect(self._on_save_as)
+        toolbar.addAction(self._act_save_as)
+
         toolbar.addSeparator()
 
-        # Engine controls
-        self._act_record: QAction = QAction("Record (Ctrl+R)", self)
+        # Engine Transport controls
+        self._act_record: QAction = QAction("● Record (Ctrl+R)", self)
         self._act_record.setShortcut(QKeySequence("Ctrl+R"))
+        self._act_record.setToolTip("Toggle hardware event recording (Ctrl+R)")
         self._act_record.triggered.connect(self._on_toggle_record)
         toolbar.addAction(self._act_record)
 
-        self._act_play: QAction = QAction("Play (F5)", self)
+        self._act_play: QAction = QAction("▶ Play (F5)", self)
         self._act_play.setShortcut(QKeySequence("F5"))
+        self._act_play.setToolTip("Execute active macro sequence (F5)")
         self._act_play.triggered.connect(self._on_play)
         toolbar.addAction(self._act_play)
 
-        self._act_stop: QAction = QAction("Stop/Abort (F6)", self)
+        self._act_stop: QAction = QAction("⏹ Stop (F6)", self)
         self._act_stop.setShortcut(QKeySequence("F6"))
+        self._act_stop.setToolTip("Abort active playback or recording (F6)")
         self._act_stop.triggered.connect(self._bridge.abort)
         toolbar.addAction(self._act_stop)
 
-        toolbar.addSeparator()
-
-        # CV Selector tool
+        # Window-wide shortcut for CV Template capture (Ctrl+G and F7)
         self._act_capture_roi: QAction = QAction("Grab CV Template", self)
+        self._act_capture_roi.setShortcuts([QKeySequence("Ctrl+G"), QKeySequence("F7")])
+        self._act_capture_roi.setToolTip("Capture Region of Interest for visual template gate (Ctrl+G / F7)")
         self._act_capture_roi.triggered.connect(self._roi_selector.start_selection)
-        toolbar.addAction(self._act_capture_roi)
+        self.addAction(self._act_capture_roi)
 
     def _wire_signals(self) -> None:
         self._timeline.action_selected.connect(self._on_action_selected)
         self._inspector.action_updated.connect(self._model.update_action)
+        self._inspector.action_created.connect(self._on_action_created)
+        self._inspector.request_cv_capture.connect(self._roi_selector.start_selection)
 
         self._bridge.recording_state_changed.connect(self._on_recording_changed)
         self._bridge.playback_state_changed.connect(self._on_playback_changed)
@@ -125,35 +148,79 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _on_action_selected(self, row: int) -> None:
-        self._inspector.inspect(row, self._model.get_action(row))
+        action = self._model.get_action(row) if row >= 0 else None
+        self._inspector.inspect(row, action)
+
+    @Slot(object)
+    def _on_action_created(self, action: object) -> None:
+        if isinstance(
+            action,
+            (
+                MouseMoveAction,
+                MouseButtonAction,
+                MouseScrollAction,
+                KeyboardKeyAction,
+                DelayAction,
+                CvTriggerAction,
+                LoopContainerAction,
+            ),
+        ):
+            self._model.append_action(action)
+            new_row = self._model.rowCount() - 1
+            self._timeline.select_rows([new_row])
+            self._inspector.inspect(new_row, action)
+            self._status_bar.showMessage(f"Added {action.action_type.value} to sequence.")
 
     @Slot()
     def _on_new(self) -> None:
         self._model.clear()
-        self._status_bar.showMessage("New sequence created.")
+        self._current_file_path = None
+        self._timeline.clear_selection()
+        self._inspector.inspect(-1, None)
+        self._inspector.set_active_tab(1)  # Focus Action Library
+        self.setWindowTitle("Untitled Sequence - Desktop Automation Suite")
+        self._status_bar.showMessage("New sequence created. Add actions from the Library on the right.")
 
     @Slot()
     def _on_open(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Open Macro Sequence", "", "JSON Files (*.json);;All Files (*.*)"
+            self, "Open Macro Sequence", "", "JSON Files (*.json);;YAML Files (*.yaml *.yml);;All Files (*.*)"
         )
         if file_path:
             try:
                 seq = MacroSerializer.load_from_file(file_path)
                 self._model.set_sequence(seq)
+                self._current_file_path = file_path
+                self.setWindowTitle(f"{Path(file_path).name} - Desktop Automation Suite")
                 self._status_bar.showMessage(f"Loaded: {Path(file_path).name}")
             except Exception as e:
                 QMessageBox.critical(self, "Load Error", f"Failed to load file: {e}")
 
     @Slot()
     def _on_save(self) -> None:
+        if self._current_file_path:
+            try:
+                seq = self._model.to_macro_sequence()
+                MacroSerializer.save_to_file(seq, self._current_file_path)
+                self.setWindowTitle(f"{Path(self._current_file_path).name} - Desktop Automation Suite")
+                self._status_bar.showMessage(f"Saved: {Path(self._current_file_path).name}")
+                return
+            except Exception as e:
+                QMessageBox.critical(self, "Save Error", f"Failed to save file: {e}")
+                return
+        self._on_save_as()
+
+    @Slot()
+    def _on_save_as(self) -> None:
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Macro Sequence", "", "JSON Files (*.json);;All Files (*.*)"
+            self, "Save Macro Sequence", "", "JSON Files (*.json);;YAML Files (*.yaml);;All Files (*.*)"
         )
         if file_path:
             try:
                 seq = self._model.to_macro_sequence()
                 MacroSerializer.save_to_file(seq, file_path)
+                self._current_file_path = file_path
+                self.setWindowTitle(f"{Path(file_path).name} - Desktop Automation Suite")
                 self._status_bar.showMessage(f"Saved: {Path(file_path).name}")
             except Exception as e:
                 QMessageBox.critical(self, "Save Error", f"Failed to save file: {e}")
@@ -177,7 +244,7 @@ class MainWindow(QMainWindow):
 
     @Slot(bool)
     def _on_recording_changed(self, active: bool) -> None:
-        self._act_record.setText("Stop Recording" if active else "Record (Ctrl+R)")
+        self._act_record.setText("⏹ Stop Recording (Ctrl+R)" if active else "● Record (Ctrl+R)")
         self._act_play.setEnabled(not active)
         self._status_bar.showMessage("● Recording inputs..." if active else "Recording finished.")
 
@@ -201,18 +268,19 @@ class MainWindow(QMainWindow):
 
     @Slot(Rect2D)
     def _on_roi_captured(self, roi: Rect2D) -> None:
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Template Image", "template.png", "PNG Images (*.png)"
-        )
-        if file_path:
-            try:
-                self._bridge.save_template(roi, file_path)
-                trigger_action = CvTriggerAction(
-                    template_path=file_path,
-                    confidence_threshold=0.8,
-                    timeout_seconds=10.0,
-                )
-                self._model.append_action(trigger_action)
-                self._status_bar.showMessage(f"Saved template and added visual gate: {Path(file_path).name}")
-            except Exception as e:
-                QMessageBox.critical(self, "Template Error", f"Failed to grab template: {e}")
+        try:
+            b64_str: str = self._bridge.capture_template_base64(roi)
+            trigger_action = CvTriggerAction(
+                image_base64=b64_str,
+                confidence_threshold=0.8,
+                timeout_seconds=10.0,
+            )
+            self._model.append_action(trigger_action)
+            new_row = self._model.rowCount() - 1
+            self._timeline.select_rows([new_row])
+            self._inspector.inspect(new_row, trigger_action)
+            self._status_bar.showMessage(
+                f"Visual gate added ({roi.width}x{roi.height} px)."
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Template Error", f"Failed to grab template: {e}")

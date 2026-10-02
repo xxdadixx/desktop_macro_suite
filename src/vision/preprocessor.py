@@ -64,7 +64,7 @@ class ImagePreprocessor:
         if image.ndim == 2:
             return image
         converted: ImageBuffer = cv2.cvtColor(image, CV_COLOR_BGR2GRAY)
-        return cast(ImageBuffer, np.ascontiguousarray(converted))
+        return np.ascontiguousarray(converted)
 
     @staticmethod
     def to_bgr(image: ImageBuffer) -> ImageBuffer:
@@ -72,7 +72,7 @@ class ImagePreprocessor:
         if image.ndim == 3:
             return image
         converted: ImageBuffer = cv2.cvtColor(image, CV_COLOR_GRAY2BGR)
-        return cast(ImageBuffer, np.ascontiguousarray(converted))
+        return np.ascontiguousarray(converted)
 
     @staticmethod
     def apply_gaussian_blur(
@@ -83,7 +83,7 @@ class ImagePreprocessor:
         """Applies Gaussian smoothing to suppress high-frequency noise."""
         k: int = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
         blurred: ImageBuffer = cv2.GaussianBlur(image, (k, k), sigma)
-        return cast(ImageBuffer, np.ascontiguousarray(blurred))
+        return np.ascontiguousarray(blurred)
 
     @staticmethod
     def apply_canny(
@@ -94,7 +94,7 @@ class ImagePreprocessor:
         """Extracts edges using the Canny algorithm."""
         gray: ImageBuffer = ImagePreprocessor.to_grayscale(image)
         edges: ImageBuffer = cv2.Canny(gray, threshold1, threshold2)
-        return cast(ImageBuffer, np.ascontiguousarray(edges))
+        return np.ascontiguousarray(edges)
 
     @staticmethod
     def resize(
@@ -111,4 +111,4 @@ class ImagePreprocessor:
             (target_width, target_height),
             CV_INTER_LINEAR,
         )
-        return cast(ImageBuffer, np.ascontiguousarray(resized))
+        return np.ascontiguousarray(resized)

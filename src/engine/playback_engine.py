@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from typing import Final
 
 from src.core.ast import (
@@ -15,6 +16,7 @@ from src.core.ast import (
     MouseMoveAction,
     MouseScrollAction,
 )
+from src.core.enums import LoopType
 from src.core.exceptions import ExecutionError
 from src.core.types import (
     CancellationTokenProtocol,
@@ -133,7 +135,7 @@ class MacroPlaybackEngine:
         self._synthesizer.send_mouse_button(action.button, action.state)
 
     def _execute_mouse_scroll(self, action: MouseScrollAction) -> None:
-        self._synthesizer.send_mouse_scroll(action.delta)
+        self._synthesizer.send_mouse_scroll(action.delta, horizontal=action.horizontal)
 
     def _execute_keyboard_key(self, action: KeyboardKeyAction) -> None:
         self._synthesizer.send_keyboard_key(
@@ -151,17 +153,64 @@ class MacroPlaybackEngine:
         PreciseTimer.sleep_ms(effective_delay, self._token)
 
     def _execute_loop(self, action: LoopContainerAction) -> None:
-        count: int = action.iterations
-        if count <= 0:
-            while True:
-                self._check_cancellation()
-                for child in action.actions:
-                    self.execute_action(child)
-        else:
-            for _ in range(count):
-                self._check_cancellation()
-                for child in action.actions:
-                    self.execute_action(child)
+        match action.loop_type:
+            case LoopType.COUNT:
+                for _ in range(action.iterations):
+                    self._check_cancellation()
+                    for child in action.actions:
+                        self.execute_action(child)
+
+            case LoopType.INFINITE:
+                while True:
+                    self._check_cancellation()
+                    for child in action.actions:
+                        self.execute_action(child)
+
+            case LoopType.DURATION:
+                start_epoch = time.monotonic()
+                deadline = start_epoch + action.duration_seconds
+                while time.monotonic() < deadline:
+                    self._check_cancellation()
+                    for child in action.actions:
+                        self.execute_action(child)
+
+            case LoopType.WHILE_CV:
+                if self._visual_evaluator is None:
+                    raise ExecutionError(
+                        f"Cannot evaluate while-cv loop '{action.id}': Visual evaluator not initialized."
+                    )
+                cv_check = CvTriggerAction(
+                    template_path=action.template_path,
+                    image_base64=action.image_base64,
+                    confidence_threshold=action.confidence_threshold,
+                    timeout_seconds=action.timeout_seconds,
+                )
+                while True:
+                    self._check_cancellation()
+                    res = self._visual_evaluator.evaluate_once(cv_check)
+                    if not res.found:
+                        break
+                    for child in action.actions:
+                        self.execute_action(child)
+
+            case LoopType.UNTIL_CV:
+                if self._visual_evaluator is None:
+                    raise ExecutionError(
+                        f"Cannot evaluate until-cv loop '{action.id}': Visual evaluator not initialized."
+                    )
+                cv_check = CvTriggerAction(
+                    template_path=action.template_path,
+                    image_base64=action.image_base64,
+                    confidence_threshold=action.confidence_threshold,
+                    timeout_seconds=action.timeout_seconds,
+                )
+                while True:
+                    self._check_cancellation()
+                    res = self._visual_evaluator.evaluate_once(cv_check)
+                    if res.found:
+                        break
+                    for child in action.actions:
+                        self.execute_action(child)
 
     def _execute_cv_trigger(self, action: CvTriggerAction) -> None:
         if self._visual_evaluator is None:

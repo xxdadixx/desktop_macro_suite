@@ -22,6 +22,7 @@ MOUSEEVENTF_XUP: Final[int] = 0x0100
 MOUSEEVENTF_WHEEL: Final[int] = 0x0800
 MOUSEEVENTF_VIRTUALDESK: Final[int] = 0x4000
 MOUSEEVENTF_ABSOLUTE: Final[int] = 0x8000
+MOUSEEVENTF_HWHEEL: Final[int] = 0x01000
 
 KEYEVENTF_EXTENDEDKEY: Final[int] = 0x0001
 KEYEVENTF_KEYUP: Final[int] = 0x0002
@@ -234,13 +235,13 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
         self._dispatch(events)
 
     @override
-    def send_mouse_scroll(self, delta: int) -> None:
+    def send_mouse_scroll(self, delta: int, horizontal: bool = False) -> None:
         event = INPUT()
         event.type = INPUT_MOUSE
         event.u.mi.dx = 0
         event.u.mi.dy = 0
         event.u.mi.mouseData = delta & 0xFFFFFFFF
-        event.u.mi.dwFlags = MOUSEEVENTF_WHEEL
+        event.u.mi.dwFlags = MOUSEEVENTF_HWHEEL if horizontal else MOUSEEVENTF_WHEEL
         event.u.mi.time = 0
         event.u.mi.dwExtraInfo = 0
 

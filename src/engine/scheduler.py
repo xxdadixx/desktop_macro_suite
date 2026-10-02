@@ -228,5 +228,8 @@ class MacroScheduler:
                         job.state = JobState.FAILED
                         job.last_error = str(exc)
 
+            if ready_jobs:
+                continue
+
             _ = self._wake_event.wait(timeout=next_wake_delay)
             self._wake_event.clear()

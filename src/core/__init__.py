@@ -21,6 +21,7 @@ from .enums import (
     ButtonState,
     ExecutionState,
     KeyState,
+    LoopType,
     MouseButton,
     TriggerComparison,
 )
@@ -89,6 +90,7 @@ __all__: Final[list[str]] = [
     "ButtonState",
     "ExecutionState",
     "KeyState",
+    "LoopType",
     "MouseButton",
     "TriggerComparison",
     # Domain Exceptions

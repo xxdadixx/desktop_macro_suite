@@ -1,13 +1,16 @@
 # pyright: reportUntypedBaseClass=false, reportUntypedFunctionDecorator=false
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Final
 
+import cv2
 from PySide6.QtCore import QObject, Signal, Slot
 
 from src.core.ast import MacroSequence
-from src.core.types import Rect2D
+from src.core.exceptions import FrameCaptureError
+from src.core.types import ImageBuffer, Rect2D
 from src.engine.orchestrator import MacroOrchestrator
 from src.ui.models.telemetry_model import PlaybackTelemetry
 from src.vision.capture import VisionCapture
@@ -41,6 +44,11 @@ class UIBridge(QObject):
     @property
     def is_playing(self) -> bool:
         return self._orchestrator.is_playing
+
+    @property
+    def vision_capture(self) -> VisionCapture:
+        """Direct accessor for high-level vision capture operations."""
+        return self._vision_capture
 
     @Slot()
     def start_recording(self) -> None:
@@ -87,3 +95,11 @@ class UIBridge(QObject):
 
     def save_template(self, region: Rect2D, output_path: str | Path) -> Path:
         return self._vision_capture.save_template(region, output_path)
+
+    def capture_template_base64(self, region: Rect2D) -> str:
+        """Captures a desktop ROI region and encodes it as an in-memory Base64 PNG string."""
+        frame: ImageBuffer = self._vision_capture.capture(region=region)
+        success, encoded_buf = cv2.imencode(".png", frame)
+        if not success:
+            raise FrameCaptureError("Failed to encode captured ROI to PNG format")
+        return base64.b64encode(encoded_buf.tobytes()).decode("ascii")

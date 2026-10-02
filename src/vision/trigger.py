@@ -4,7 +4,7 @@ import time
 from typing import Final
 
 from src.core.ast import CvTriggerAction
-from src.core.exceptions import MacroTimeoutError
+from src.core.exceptions import MacroTimeoutError, TemplateMatchError
 from src.core.types import (
     CancellationTokenProtocol,
     FrameCaptureProtocol,
@@ -43,10 +43,17 @@ class VisualTriggerEvaluator:
         region: Rect2D | None = None,
     ) -> MatchResult:
         """Executes a single capture and template match check."""
+        target: str = action.image_base64 if action.image_base64 else action.template_path
+        if not target.strip():
+            raise TemplateMatchError(
+                template_path=action.template_path,
+                reason="CvTriggerAction has neither 'template_path' nor 'image_base64' defined.",
+            )
+
         frame: ImageBuffer = self._capture.capture(region=region)
         return self._matcher.find(
             haystack=frame,
-            template=action.template_path,
+            template=target,
             threshold=action.confidence_threshold,
         )
 

@@ -78,31 +78,34 @@ class InputCaptureEngine:
         )
 
     def _append_delay_if_needed(self, current_ns: Nanoseconds) -> None:
-        if self._last_event_ns is not None:
-            delta_ns: int = current_ns - self._last_event_ns
-            delta_ms: float = delta_ns / NS_PER_MS
-            if delta_ms >= MIN_DELAY_THRESHOLD_MS:
-                delay_action = DelayAction(
-                    duration_ms=round(delta_ms, 2),
-                    jitter_ms=0.0,
-                )
-                self._recorded_actions.append(delay_action)
-        self._last_event_ns = current_ns
+        if self._last_event_ns is None:
+            self._last_event_ns = current_ns
+            return
+
+        delta_ns: int = current_ns - self._last_event_ns
+        delta_ms: float = delta_ns / NS_PER_MS
+        if delta_ms >= MIN_DELAY_THRESHOLD_MS:
+            delay_action = DelayAction(
+                duration_ms=round(delta_ms, 2),
+                jitter_ms=0.0,
+            )
+            self._recorded_actions.append(delay_action)
+            self._last_event_ns = current_ns
 
     def _on_mouse_event(self, event: RawMouseEvent) -> None:
         with self._lock:
             if not self._recording:
                 return
 
-            self._append_delay_if_needed(event.timestamp_ns)
-
             if event.wheel_delta != 0:
+                self._append_delay_if_needed(event.timestamp_ns)
                 scroll_action = MouseScrollAction(
                     delta=event.wheel_delta,
                     horizontal=False,
                 )
                 self._recorded_actions.append(scroll_action)
             elif event.button is not None and event.state is not None:
+                self._append_delay_if_needed(event.timestamp_ns)
                 btn_action = MouseButtonAction(
                     button=event.button,
                     state=event.state,
@@ -111,6 +114,16 @@ class InputCaptureEngine:
                 )
                 self._recorded_actions.append(btn_action)
             else:
+                # Deduplicate stationary mouse moves
+                if (
+                    self._recorded_actions
+                    and isinstance(self._recorded_actions[-1], MouseMoveAction)
+                    and self._recorded_actions[-1].x == event.x
+                    and self._recorded_actions[-1].y == event.y
+                ):
+                    return
+
+                self._append_delay_if_needed(event.timestamp_ns)
                 move_action = MouseMoveAction(
                     x=event.x,
                     y=event.y,

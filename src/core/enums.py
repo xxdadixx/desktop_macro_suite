@@ -13,6 +13,15 @@ class ActionType(StrEnum):
 
 
 @unique
+class LoopType(StrEnum):
+    COUNT = "count"
+    INFINITE = "infinite"
+    DURATION = "duration"
+    WHILE_CV = "while_cv"
+    UNTIL_CV = "until_cv"
+
+
+@unique
 class MouseButton(StrEnum):
     LEFT = "left"
     RIGHT = "right"

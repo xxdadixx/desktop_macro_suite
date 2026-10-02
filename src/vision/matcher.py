@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol, cast
+from typing import TYPE_CHECKING, Final, Protocol
 
 import numpy as np
 
@@ -17,6 +18,10 @@ if TYPE_CHECKING:
     class _Cv2Protocol(Protocol):
         def imread(
             self, filename: str, flags: int = ...
+        ) -> ImageBuffer | None: ...
+
+        def imdecode(
+            self, buf: ImageBuffer, flags: int
         ) -> ImageBuffer | None: ...
 
         def cvtColor(
@@ -63,13 +68,36 @@ class TemplateMatcher:
         if image is None:
             raise FileNotFoundError(f"Failed to load template image at '{path_str}'")
 
-        buffer: ImageBuffer = cast(ImageBuffer, np.ascontiguousarray(image))
+        buffer: ImageBuffer = np.ascontiguousarray(image)
         self._template_cache[path_str] = buffer
         return buffer
 
     def clear_cache(self) -> None:
         """Flushes all pre-loaded template images from memory."""
         self._template_cache.clear()
+
+    def load_from_base64(self, b64_data: str) -> ImageBuffer:
+        """Decodes a Base64 PNG string into an in-memory BGR ImageBuffer."""
+        cleaned_b64: str = b64_data.strip()
+        if not cleaned_b64:
+            raise ValueError("Base64 template data cannot be empty.")
+
+        cached: ImageBuffer | None = self._template_cache.get(cleaned_b64)
+        if cached is not None:
+            return cached
+
+        raw_bytes: bytes = base64.b64decode(cleaned_b64)
+        if not raw_bytes:
+            raise ValueError("Decoded Base64 buffer contains 0 bytes.")
+
+        arr: ImageBuffer = np.frombuffer(raw_bytes, dtype=np.uint8)
+        decoded: ImageBuffer | None = cv2.imdecode(arr, CV_IMREAD_COLOR)
+        if decoded is None:
+            raise ValueError("Failed to decode in-memory template image from Base64")
+
+        buffer: ImageBuffer = np.ascontiguousarray(decoded)
+        self._template_cache[cleaned_b64] = buffer
+        return buffer
 
     def find(
         self,
@@ -78,11 +106,26 @@ class TemplateMatcher:
         threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
     ) -> MatchResult:
         """Searches for needle template within haystack image buffer."""
-        template_buffer: ImageBuffer = (
-            self.load_template(template)
-            if isinstance(template, (str, Path))
-            else template
-        )
+        template_buffer: ImageBuffer
+        if isinstance(template, Path):
+            template_buffer = self.load_template(template)
+        elif isinstance(template, str):
+            clean_str: str = template.strip()
+            if not clean_str:
+                raise ValueError("Template target identifier or Base64 payload cannot be empty.")
+
+            if clean_str.startswith("iVBORw0KGgo") or len(clean_str) > 260:
+                template_buffer = self.load_from_base64(clean_str)
+            else:
+                try:
+                    if Path(clean_str).is_file():
+                        template_buffer = self.load_template(clean_str)
+                    else:
+                        template_buffer = self.load_from_base64(clean_str)
+                except OSError:
+                    template_buffer = self.load_from_base64(clean_str)
+        else:
+            template_buffer = template
 
         haystack_h: int = int(haystack.shape[0])
         haystack_w: int = int(haystack.shape[1])

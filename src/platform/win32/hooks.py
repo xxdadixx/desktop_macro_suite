@@ -124,7 +124,16 @@ _user32.PostThreadMessageW.argtypes = [
     wintypes.WPARAM,
     wintypes.LPARAM,
 ]
+
+_user32.PeekMessageW.argtypes = [
+    ctypes.POINTER(wintypes.MSG),
+    wintypes.HWND,
+    wintypes.UINT,
+    wintypes.UINT,
+    wintypes.UINT,
+]
 _user32.PostThreadMessageW.restype = wintypes.BOOL
+_user32.PeekMessageW.restype = wintypes.BOOL
 
 _kernel32.GetCurrentThreadId.argtypes = []
 _kernel32.GetCurrentThreadId.restype = wintypes.DWORD
@@ -153,6 +162,11 @@ _get_current_thread_id: Callable[[], int] = cast(
 )
 _get_module_handle: Callable[[str | None], int] = cast(
     Callable[[str | None], int], _kernel32.GetModuleHandleW
+)
+
+_peek_message: Callable[[object, int | None, int, int, int], int] = cast(
+    Callable[[object, int | None, int, int, int], int],
+    _user32.PeekMessageW,
 )
 
 
@@ -249,6 +263,10 @@ class Win32HookManager(LowLevelHookManagerProtocol):
     def _pump_messages(self) -> None:
         thread_id: int = _get_current_thread_id()
         h_mod: int = _get_module_handle(None)
+
+        # Force kernel initialization of the thread message queue before hook registration
+        dummy_msg = (wintypes.MSG * 1)()
+        _ = _peek_message(dummy_msg, None, 0, 0, 0)
 
         mouse_hhook: int = _set_windows_hook_ex(
             WH_MOUSE_LL,

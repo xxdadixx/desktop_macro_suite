@@ -10,7 +10,7 @@ from pydantic import (
     PositiveInt,
 )
 
-from .enums import ActionType, ButtonState, KeyState, MouseButton
+from .enums import ActionType, ButtonState, KeyState, LoopType, MouseButton
 
 
 def _generate_action_id() -> str:
@@ -66,7 +66,14 @@ class CvTriggerAction(BaseAction):
     """Computer vision gate requiring visual match before sequence progression."""
 
     action_type: Literal[ActionType.CV_TRIGGER] = ActionType.CV_TRIGGER
-    template_path: str = Field(..., description="Path to template image file")
+    template_path: str = Field(
+        default="",
+        description="Path to template image file (optional if image_base64 is provided)",
+    )
+    image_base64: str = Field(
+        default="",
+        description="Base64-encoded PNG image buffer for self-contained sequences",
+    )
     confidence_threshold: float = Field(
         default=0.8,
         ge=0.0,
@@ -81,8 +88,31 @@ class CvTriggerAction(BaseAction):
 
 
 class LoopContainerAction(BaseAction):
+    """Execution block repeating child actions across various coding loop types."""
+
     action_type: Literal[ActionType.LOOP_CONTAINER] = ActionType.LOOP_CONTAINER
+    loop_type: LoopType = LoopType.COUNT
     iterations: PositiveInt = 1
+    duration_seconds: NonNegativeFloat = 10.0
+    template_path: str = Field(
+        default="",
+        description="Path to template image file for visual while/until conditions",
+    )
+    image_base64: str = Field(
+        default="",
+        description="Base64-encoded PNG image buffer for visual conditions",
+    )
+    confidence_threshold: float = Field(
+        default=0.8,
+        ge=0.0,
+        le=1.0,
+        description="Minimum normalized match score for condition checks",
+    )
+    timeout_seconds: float = Field(
+        default=30.0,
+        ge=0.0,
+        description="Safety timeout limit for condition-based loops",
+    )
     actions: list["ActionNode"] = Field(default_factory=list)
 
 
