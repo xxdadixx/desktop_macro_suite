@@ -14,6 +14,7 @@ from .enums import (
     ActionType,
     ButtonState,
     CvFailurePolicy,
+    CvMatchMode,
     CvMouseAction,
     CvSelectionStrategy,
     KeyState,
@@ -131,6 +132,15 @@ class CvTriggerAction(BaseAction):
         default=None,
         description="Original capture region height in pixels",
     )
+    match_mode: CvMatchMode = Field(
+        default=CvMatchMode.STANDARD,
+        description="Matching algorithm: standard intensity or Canny edge contour matching",
+    )
+    search_roi_padding: int = Field(
+        default=0,
+        ge=0,
+        description="Search window padding in pixels around original crop (0 = full screen)",
+    )
 
 
 class CvBranchCase(BaseModel):
@@ -150,6 +160,8 @@ class CvBranchCase(BaseModel):
     crop_y: int | None = Field(default=None)
     crop_width: int | None = Field(default=None)
     crop_height: int | None = Field(default=None)
+    match_mode: CvMatchMode = Field(default=CvMatchMode.STANDARD)
+    search_roi_padding: int = Field(default=0, ge=0)
     actions: list["ActionNode"] = Field(default_factory=list)
 
 
@@ -172,7 +184,11 @@ class CvMultiTriggerAction(BaseAction):
     )
     branches: list[CvBranchCase] = Field(
         default_factory=list,
-        description="List of candidate templates and their corresponding actions",
+        description="List of candidate templates and their corresponding actions (legacy format)",
+    )
+    actions: list["ActionNode"] = Field(
+        default_factory=list,
+        description="Nested child actions / candidate visual triggers evaluated within this container block",
     )
 
 

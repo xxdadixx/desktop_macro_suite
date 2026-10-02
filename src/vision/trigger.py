@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import time
 from typing import Final, Protocol, runtime_checkable
 
@@ -85,7 +86,7 @@ class VisualTriggerEvaluator:
         action: CvTriggerAction,
         region: Rect2D | None = None,
     ) -> MatchResult:
-        """Executes a single capture and template match check with virtual desktop offset correction."""
+        """Executes a single capture and template match check with optional search bounding."""
         target: str = action.image_base64 if action.image_base64 else action.template_path
         if not target.strip():
             raise TemplateMatchError(
@@ -93,12 +94,31 @@ class VisualTriggerEvaluator:
                 reason="CvTriggerAction has neither 'template_path' nor 'image_base64' defined.",
             )
 
-        frame: ImageBuffer = self._capture.capture(region=region)
+        # Restrict screen capture to local search bounding box if padding is configured
+        search_region: Rect2D | None = region
+        if (
+            search_region is None
+            and action.search_roi_padding > 0
+            and action.crop_x is not None
+            and action.crop_y is not None
+            and action.crop_width is not None
+            and action.crop_height is not None
+        ):
+            pad: int = action.search_roi_padding
+            search_region = Rect2D(
+                x=max(0, action.crop_x - pad),
+                y=max(0, action.crop_y - pad),
+                width=action.crop_width + (pad * 2),
+                height=action.crop_height + (pad * 2),
+            )
+
+        frame: ImageBuffer = self._capture.capture(region=search_region)
         try:
             raw_match: MatchResult = self._matcher.find(
                 haystack=frame,
                 template=target,
                 threshold=action.confidence_threshold,
+                match_mode=action.match_mode.value,
             )
         except (FileNotFoundError, ValueError) as err:
             raise TemplateMatchError(
@@ -106,7 +126,7 @@ class VisualTriggerEvaluator:
                 reason=str(err),
             ) from err
 
-        return self._adjust_match_coordinates(raw_match, region)
+        return self._adjust_match_coordinates(raw_match, search_region)
 
     def evaluate_multi(
         self,
@@ -186,6 +206,47 @@ class VisualTriggerEvaluator:
 
             PreciseTimer.sleep_ms(poll_interval_ms, cancellation_token)
 
+    def _extract_candidate_branches(
+        self, action: CvMultiTriggerAction
+    ) -> list[CvBranchCase]:
+        """Extracts candidate visual branches from either action.actions or legacy action.branches."""
+        if action.actions:
+            candidates: list[CvBranchCase] = []
+            for child in action.actions:
+                if isinstance(child, CvTriggerAction):
+                    name_str: str = (
+                        child.description
+                        if child.description
+                        else (
+                            Path(child.template_path).stem
+                            if child.template_path
+                            else f"Target #{len(candidates) + 1}"
+                        )
+                    )
+                    candidates.append(
+                        CvBranchCase(
+                            id=child.id,
+                            name=name_str,
+                            template_path=child.template_path,
+                            image_base64=child.image_base64,
+                            confidence_threshold=child.confidence_threshold,
+                            mouse_action=child.mouse_action,
+                            offset_x=child.offset_x,
+                            offset_y=child.offset_y,
+                            crop_x=child.crop_x,
+                            crop_y=child.crop_y,
+                            crop_width=child.crop_width,
+                            crop_height=child.crop_height,
+                            match_mode=child.match_mode,
+                            search_roi_padding=child.search_roi_padding,
+                            actions=[],
+                        )
+                    )
+            if candidates:
+                return candidates
+
+        return action.branches
+
     def wait_for_multi_trigger(
         self,
         action: CvMultiTriggerAction,
@@ -196,13 +257,14 @@ class VisualTriggerEvaluator:
         """Polls screen frames continuously until any candidate branch in the pool matches or timeout expires."""
         start_time: float = time.monotonic()
         timeout: float = action.timeout_seconds
+        candidates: list[CvBranchCase] = self._extract_candidate_branches(action)
 
         while True:
             if cancellation_token is not None:
                 cancellation_token.raise_if_cancelled()
 
             matched_branch, match_res = self.evaluate_multi(
-                branches=action.branches,
+                branches=candidates,
                 region=region,
                 strategy=action.strategy,
             )

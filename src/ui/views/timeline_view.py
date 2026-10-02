@@ -411,6 +411,12 @@ class TimelineView(QWidget):
         self._btn_wrap_loop.setToolTip("Enclose selected actions in a loop container (Ctrl+L)")
         self._btn_wrap_loop.clicked.connect(self._on_wrap_loop)
 
+        self._btn_wrap_multi_cv: QPushButton = QPushButton("🔀 Wrap in Multi-CV")
+        self._btn_wrap_multi_cv.setToolTip(
+            "Wrap selected Action CVs into a parallel Multi-Target block (Ctrl+M)"
+        )
+        self._btn_wrap_multi_cv.clicked.connect(self._on_wrap_multi_cv)
+
         self._btn_add_delay: QPushButton = QPushButton("+ Delay")
         self._btn_add_delay.setToolTip("Insert a pause action (Insert / Alt+D)")
         self._btn_add_delay.clicked.connect(self._on_add_delay)
@@ -427,6 +433,7 @@ class TimelineView(QWidget):
         toolbar.addWidget(self._btn_indent)
         toolbar.addWidget(self._btn_outdent)
         toolbar.addWidget(self._btn_wrap_loop)
+        toolbar.addWidget(self._btn_wrap_multi_cv)
         toolbar.addWidget(self._btn_add_delay)
         toolbar.addWidget(self._btn_delete)
         toolbar.addStretch()
@@ -486,9 +493,25 @@ class TimelineView(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_Tab), self, self._on_indent, context=ctx)
         QShortcut(QKeySequence("Shift+Tab"), self, self._on_outdent, context=ctx)
         QShortcut(QKeySequence("Ctrl+L"), self, self._on_wrap_loop, context=ctx)
+        QShortcut(QKeySequence("Ctrl+M"), self, self._on_wrap_multi_cv, context=ctx)
         QShortcut(QKeySequence("Insert"), self, self._on_add_delay, context=ctx)
         QShortcut(QKeySequence("Alt+D"), self, self._on_add_delay, context=ctx)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.clear_selection, context=ctx)
+
+    def _on_wrap_multi_cv(self) -> None:
+        rows = self.selected_rows()
+        if not rows:
+            self.status_message_requested.emit("Select Action CV(s) to wrap into a Multi-CV block.")
+            return
+
+        new_row = self._model.wrap_actions_in_multi_cv(rows)
+        self.select_row(new_row)
+        self.status_message_requested.emit(
+            f"Wrapped {len(rows)} Action CV(s) into a Multi-CV candidate block."
+        )
+
+    def _on_combine_cv(self) -> None:
+        self._on_wrap_multi_cv()
 
     def selected_rows(self) -> list[int]:
         selection_model = self._table.selectionModel()

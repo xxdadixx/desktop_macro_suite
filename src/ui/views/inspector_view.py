@@ -41,6 +41,7 @@ from src.core.ast import (
 from src.core.enums import (
     ButtonState,
     CvFailurePolicy,
+    CvMatchMode,
     CvMouseAction,
     CvSelectionStrategy,
     KeyState,
@@ -70,7 +71,11 @@ class CoordinatePickButton(QPushButton):
 
     pick_requested: Signal = Signal()
 
-    def __init__(self, text: str = "🎯 Drag / Pick Screen Location", parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        text: str = "🎯 Drag / Pick Screen Location",
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(text, parent)
         self.setStyleSheet(
             "QPushButton {"
@@ -102,6 +107,7 @@ class ActionInspectorView(QWidget):
     action_updated: Signal = Signal(int, object)
     action_created: Signal = Signal(object)
     request_cv_capture: Signal = Signal()
+    request_recrop_cv: Signal = Signal()
     request_coordinate_pick: Signal = Signal()
     request_test_cv: Signal = Signal(object)
     request_locate_crop: Signal = Signal(int, int, int, int)
@@ -159,7 +165,9 @@ class ActionInspectorView(QWidget):
         self._btn_save.clicked.connect(self._on_save_clicked)
         layout.addWidget(self._btn_save)
 
-        self._empty_label: QLabel = QLabel("No action selected.\nPick an action from the timeline or add one from the Library.")
+        self._empty_label: QLabel = QLabel(
+            "No action selected.\nPick an action from the timeline or add one from the Library."
+        )
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._empty_label)
 
@@ -238,13 +246,22 @@ class ActionInspectorView(QWidget):
         )
 
     def _create_mouse_click(self) -> None:
-        self.action_created.emit(MouseButtonAction(button=MouseButton.LEFT, state=ButtonState.CLICK))
+        self.action_created.emit(
+            MouseButtonAction(button=MouseButton.LEFT, state=ButtonState.CLICK)
+        )
 
     def _create_mouse_scroll(self) -> None:
         self.action_created.emit(MouseScrollAction(delta=-120, horizontal=False))
 
     def _create_keyboard_key(self) -> None:
-        self.action_created.emit(KeyboardKeyAction(vk_code=13, scan_code=28, state=KeyState.KEY_PRESS, key_name="Enter"))
+        self.action_created.emit(
+            KeyboardKeyAction(
+                vk_code=13,
+                scan_code=28,
+                state=KeyState.KEY_PRESS,
+                key_name="Enter",
+            )
+        )
 
     def _create_delay(self) -> None:
         self.action_created.emit(DelayAction(duration_ms=0.0, jitter_ms=0.0))
@@ -393,11 +410,23 @@ class ActionInspectorView(QWidget):
         self._cv_crop_meta.setStyleSheet("color: #8B949E; font-size: 10px;")
         preview_layout.addWidget(self._cv_crop_meta)
 
-        self._cv_btn_locate_crop: QPushButton = QPushButton("📍 Locate Crop Area on Screen", preview_box)
-        self._cv_btn_locate_crop.setStyleSheet("background-color: #0277BD; font-weight: bold; padding: 4px;")
-        self._cv_btn_locate_crop.clicked.connect(self._on_locate_crop_clicked)
-        preview_layout.addWidget(self._cv_btn_locate_crop)
+        btn_row = QHBoxLayout()
+        self._cv_btn_recrop: QPushButton = QPushButton("✂ Re-capture Crop Area", preview_box)
+        self._cv_btn_recrop.setStyleSheet(
+            "background-color: #E65100; color: #FFFFFF; font-weight: bold; padding: 4px;"
+        )
+        self._cv_btn_recrop.setToolTip("Re-select screen ROI to replace this template image and crop coordinates")
+        self._cv_btn_recrop.clicked.connect(self.request_recrop_cv.emit)
+        btn_row.addWidget(self._cv_btn_recrop)
 
+        self._cv_btn_locate_crop: QPushButton = QPushButton("📍 Locate on Screen", preview_box)
+        self._cv_btn_locate_crop.setStyleSheet(
+            "background-color: #0277BD; color: #FFFFFF; font-weight: bold; padding: 4px;"
+        )
+        self._cv_btn_locate_crop.clicked.connect(self._on_locate_crop_clicked)
+        btn_row.addWidget(self._cv_btn_locate_crop)
+
+        preview_layout.addLayout(btn_row)
         layout.addWidget(preview_box)
 
         test_box = QGroupBox("Pre-Execution Verification", self._page_cv)
@@ -425,6 +454,21 @@ class ActionInspectorView(QWidget):
         form_layout.setContentsMargins(2, 2, 2, 2)
 
         self._cv_template_edit: QLineEdit = QLineEdit()
+
+        self._cv_match_mode_combo: QComboBox = QComboBox()
+        self._cv_match_mode_combo.addItem(
+            "Standard Grayscale (Solid Backgrounds)", CvMatchMode.STANDARD
+        )
+        self._cv_match_mode_combo.addItem(
+            "Edge / Contour (Transparent & Moving Backgrounds)", CvMatchMode.EDGE
+        )
+
+        self._cv_search_area_combo: QComboBox = QComboBox()
+        self._cv_search_area_combo.addItem("Full Desktop Surface (Unconstrained)", 0)
+        self._cv_search_area_combo.addItem("Near Original Crop (±50 px Search Window)", 50)
+        self._cv_search_area_combo.addItem("Near Original Crop (±100 px Search Window)", 100)
+        self._cv_search_area_combo.addItem("Near Original Crop (±200 px Search Window)", 200)
+
         self._cv_confidence_spin: QDoubleSpinBox = QDoubleSpinBox()
         self._cv_confidence_spin.setRange(0.0, 1.0)
         self._cv_confidence_spin.setSingleStep(0.05)
@@ -434,21 +478,41 @@ class ActionInspectorView(QWidget):
         self._cv_timeout_spin.setSuffix(" s")
 
         self._cv_policy_combo: QComboBox = QComboBox()
-        self._cv_policy_combo.addItem("assert vision.wait_for() [Assert / Wait]", CvFailurePolicy.ABORT)
-        self._cv_policy_combo.addItem("if vision.exists() ... else: pass [If Condition]", CvFailurePolicy.SKIP)
-        self._cv_policy_combo.addItem("if not vision.exists(): break [Break Loop]", CvFailurePolicy.BREAK_LOOP)
+        self._cv_policy_combo.addItem(
+            "assert vision.wait_for() [Assert / Wait]", CvFailurePolicy.ABORT
+        )
+        self._cv_policy_combo.addItem(
+            "if vision.exists() ... else: pass [If Condition]", CvFailurePolicy.SKIP
+        )
+        self._cv_policy_combo.addItem(
+            "if not vision.exists(): break [Break Loop]", CvFailurePolicy.BREAK_LOOP
+        )
 
         self._cv_comparison_combo: QComboBox = QComboBox()
         self._cv_comparison_combo.addItem("Target Appears (Visible)", TriggerComparison.APPEARS)
-        self._cv_comparison_combo.addItem("Target Disappears (Hidden)", TriggerComparison.DISAPPEARS)
+        self._cv_comparison_combo.addItem(
+            "Target Disappears (Hidden)", TriggerComparison.DISAPPEARS
+        )
 
         self._cv_mouse_action_combo: QComboBox = QComboBox()
-        self._cv_mouse_action_combo.addItem("🎯 Click Target (Left Click)", CvMouseAction.CLICK)
-        self._cv_mouse_action_combo.addItem("👆 Double-Click Target", CvMouseAction.DOUBLE_CLICK)
-        self._cv_mouse_action_combo.addItem("🖱 Right-Click Target", CvMouseAction.RIGHT_CLICK)
-        self._cv_mouse_action_combo.addItem("📍 Move Cursor Only (Hover)", CvMouseAction.MOVE_ONLY)
-        self._cv_mouse_action_combo.addItem("🚫 None (Visual Check Only)", CvMouseAction.NONE)
-        self._cv_mouse_action_combo.currentIndexChanged.connect(self._on_cv_mouse_action_changed)
+        self._cv_mouse_action_combo.addItem(
+            "🎯 Click Target (Left Click)", CvMouseAction.CLICK
+        )
+        self._cv_mouse_action_combo.addItem(
+            "👆 Double-Click Target", CvMouseAction.DOUBLE_CLICK
+        )
+        self._cv_mouse_action_combo.addItem(
+            "🖱 Right-Click Target", CvMouseAction.RIGHT_CLICK
+        )
+        self._cv_mouse_action_combo.addItem(
+            "📍 Move Cursor Only (Hover)", CvMouseAction.MOVE_ONLY
+        )
+        self._cv_mouse_action_combo.addItem(
+            "🚫 None (Visual Check Only)", CvMouseAction.NONE
+        )
+        self._cv_mouse_action_combo.currentIndexChanged.connect(
+            self._on_cv_mouse_action_changed
+        )
 
         self._cv_offset_x_spin: QSpinBox = QSpinBox()
         self._cv_offset_x_spin.setRange(-2000, 2000)
@@ -459,6 +523,8 @@ class ActionInspectorView(QWidget):
         self._cv_offset_y_spin.setSuffix(" px")
 
         form_layout.addRow("Template File:", self._cv_template_edit)
+        form_layout.addRow("Match Algorithm:", self._cv_match_mode_combo)
+        form_layout.addRow("Search Surface:", self._cv_search_area_combo)
         form_layout.addRow("Flow Policy:", self._cv_policy_combo)
         form_layout.addRow("Condition:", self._cv_comparison_combo)
         form_layout.addRow("Target Action:", self._cv_mouse_action_combo)
@@ -481,14 +547,17 @@ class ActionInspectorView(QWidget):
         info_layout.setContentsMargins(6, 6, 6, 6)
         info_layout.setSpacing(4)
 
-        self._cv_multi_status_label: QLabel = QLabel("0 candidate targets registered", info_box)
+        self._cv_multi_status_label: QLabel = QLabel("0 candidate targets in block", info_box)
         self._cv_multi_status_label.setStyleSheet("color: #00E676; font-size: 11px; font-weight: bold;")
         info_layout.addWidget(self._cv_multi_status_label)
 
-        self._cv_multi_candidates_label: QLabel = QLabel("", info_box)
-        self._cv_multi_candidates_label.setWordWrap(True)
-        self._cv_multi_candidates_label.setStyleSheet("color: #8B949E; font-size: 10px;")
-        info_layout.addWidget(self._cv_multi_candidates_label)
+        hint_label = QLabel(
+            "Tip: Select any nested Action CV below this block in the timeline to edit its specific template, coordinates, and click behavior.",
+            info_box,
+        )
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet("color: #8B949E; font-size: 10px;")
+        info_layout.addWidget(hint_label)
 
         layout.addWidget(info_box)
 
@@ -497,7 +566,7 @@ class ActionInspectorView(QWidget):
         test_layout.setContentsMargins(6, 6, 6, 6)
         test_layout.setSpacing(4)
 
-        self._cv_multi_btn_test: QPushButton = QPushButton("🧪 Test Multi-Match on Screen", test_box)
+        self._cv_multi_btn_test: QPushButton = QPushButton("🧪 Test All Candidate Matches", test_box)
         self._cv_multi_btn_test.setStyleSheet("background-color: #00897B; font-weight: bold; padding: 6px;")
         self._cv_multi_btn_test.setToolTip("Evaluate all candidate targets simultaneously against the live screen")
         self._cv_multi_btn_test.clicked.connect(self._on_test_cv_multi_clicked)
@@ -536,13 +605,6 @@ class ActionInspectorView(QWidget):
         layout.addLayout(form_layout)
         self._stack.addWidget(self._page_cv_multi)
 
-    def _on_cv_mouse_action_changed(self) -> None:
-        """Enables or disables offset inputs depending on whether a cursor action is active."""
-        action = _coerce_enum(self._cv_mouse_action_combo.currentData(), CvMouseAction)
-        has_mouse = action is not None and action != CvMouseAction.NONE
-        self._cv_offset_x_spin.setEnabled(has_mouse)
-        self._cv_offset_y_spin.setEnabled(has_mouse)
-
     def _on_locate_crop_clicked(self) -> None:
         if isinstance(self._current_action, CvTriggerAction):
             c = self._current_action
@@ -552,20 +614,46 @@ class ActionInspectorView(QWidget):
                 and c.crop_width is not None
                 and c.crop_height is not None
             ):
-                self.request_locate_crop.emit(c.crop_x, c.crop_y, c.crop_width, c.crop_height)
+                self.request_locate_crop.emit(
+                    c.crop_x, c.crop_y, c.crop_width, c.crop_height
+                )
+
+    def _on_cv_mouse_action_changed(self) -> None:
+        """Enables or disables offset inputs depending on whether a cursor action is active."""
+        action = _coerce_enum(
+            self._cv_mouse_action_combo.currentData(), CvMouseAction
+        )
+        has_mouse = action is not None and action != CvMouseAction.NONE
+        self._cv_offset_x_spin.setEnabled(has_mouse)
+        self._cv_offset_y_spin.setEnabled(has_mouse)
 
     def _on_test_cv_clicked(self) -> None:
         if not isinstance(self._current_action, CvTriggerAction):
             return
 
-        pol = _coerce_enum(self._cv_policy_combo.currentData(), CvFailurePolicy) or CvFailurePolicy.ABORT
-        comp = _coerce_enum(self._cv_comparison_combo.currentData(), TriggerComparison) or TriggerComparison.APPEARS
-        mouse_act = _coerce_enum(self._cv_mouse_action_combo.currentData(), CvMouseAction) or CvMouseAction.CLICK
+        pol = (
+            _coerce_enum(self._cv_policy_combo.currentData(), CvFailurePolicy)
+            or CvFailurePolicy.ABORT
+        )
+        comp = (
+            _coerce_enum(self._cv_comparison_combo.currentData(), TriggerComparison)
+            or TriggerComparison.APPEARS
+        )
+        mouse_act = (
+            _coerce_enum(self._cv_mouse_action_combo.currentData(), CvMouseAction)
+            or CvMouseAction.CLICK
+        )
+        match_mode = (
+            _coerce_enum(self._cv_match_mode_combo.currentData(), CvMatchMode)
+            or CvMatchMode.STANDARD
+        )
+        search_padding = int(self._cv_search_area_combo.currentData() or 0)
 
         new_template_path: str = self._cv_template_edit.text().strip()
         retained_base64: str = (
             self._current_action.image_base64
-            if not new_template_path or new_template_path == self._current_action.template_path
+            if not new_template_path
+            or new_template_path == self._current_action.template_path
             else ""
         )
 
@@ -586,6 +674,8 @@ class ActionInspectorView(QWidget):
             crop_y=self._current_action.crop_y,
             crop_width=self._current_action.crop_width,
             crop_height=self._current_action.crop_height,
+            match_mode=match_mode,
+            search_roi_padding=search_padding,
         )
 
         self._cv_test_feedback.setText("Scanning display surface...")
@@ -599,7 +689,10 @@ class ActionInspectorView(QWidget):
             _coerce_enum(self._cv_multi_strategy_combo.currentData(), CvSelectionStrategy)
             or CvSelectionStrategy.FIRST_MATCH
         )
-        pol = _coerce_enum(self._cv_multi_policy_combo.currentData(), CvFailurePolicy) or CvFailurePolicy.SKIP
+        pol = (
+            _coerce_enum(self._cv_multi_policy_combo.currentData(), CvFailurePolicy)
+            or CvFailurePolicy.SKIP
+        )
 
         test_action = CvMultiTriggerAction(
             id=self._current_action.id,
@@ -609,6 +702,7 @@ class ActionInspectorView(QWidget):
             strategy=strat,
             failure_policy=pol,
             branches=self._current_action.branches,
+            actions=self._current_action.actions,
         )
 
         self._cv_multi_test_feedback.setText("Scanning display surface for candidate pool...")
@@ -644,7 +738,12 @@ class ActionInspectorView(QWidget):
         result: MatchResult | None,
     ) -> None:
         """Formats and renders visual multi-match feedback in the inspector card."""
-        if matched_branch is not None and result is not None and result.found and result.center is not None:
+        if (
+            matched_branch is not None
+            and result is not None
+            and result.found
+            and result.center is not None
+        ):
             pct = result.confidence * 100.0
             self._cv_multi_test_feedback.setStyleSheet(
                 "font-size: 10px; color: #00E676; font-weight: bold; padding: 4px; "
@@ -695,8 +794,12 @@ class ActionInspectorView(QWidget):
                 Qt.TransformationMode.SmoothTransformation,
             )
             self._cv_preview_img.setPixmap(scaled)
-            source_desc = "In-Memory Embedded" if action.image_base64 else "File System"
-            self._cv_preview_meta.setText(f"{pixmap.width()} × {pixmap.height()} px [{source_desc}]")
+            source_desc = (
+                "In-Memory Embedded" if action.image_base64 else "File System"
+            )
+            self._cv_preview_meta.setText(
+                f"{pixmap.width()} × {pixmap.height()} px [{source_desc}]"
+            )
         else:
             self._cv_preview_img.setText("No Preview Available")
             self._cv_preview_meta.setText("Template image not found")
@@ -727,9 +830,15 @@ class ActionInspectorView(QWidget):
         self._loop_type_combo: QComboBox = QComboBox()
         self._loop_type_combo.addItem("for _ in range(N) [Count]", LoopType.COUNT)
         self._loop_type_combo.addItem("while True [Infinite]", LoopType.INFINITE)
-        self._loop_type_combo.addItem("while elapsed < T [Duration]", LoopType.DURATION)
-        self._loop_type_combo.addItem("while vision.exists [Visual Condition]", LoopType.WHILE_CV)
-        self._loop_type_combo.addItem("until vision.exists [Visual Condition]", LoopType.UNTIL_CV)
+        self._loop_type_combo.addItem(
+            "while elapsed < T [Duration]", LoopType.DURATION
+        )
+        self._loop_type_combo.addItem(
+            "while vision.exists [Visual Condition]", LoopType.WHILE_CV
+        )
+        self._loop_type_combo.addItem(
+            "until vision.exists [Visual Condition]", LoopType.UNTIL_CV
+        )
         self._loop_type_combo.currentIndexChanged.connect(self._on_loop_type_changed)
 
         self._loop_iterations_spin: QSpinBox = QSpinBox()
@@ -758,7 +867,9 @@ class ActionInspectorView(QWidget):
         self._stack.addWidget(self._page_loop)
 
     def _on_loop_type_changed(self) -> None:
-        selected_type = _coerce_enum(self._loop_type_combo.currentData(), LoopType)
+        selected_type = _coerce_enum(
+            self._loop_type_combo.currentData(), LoopType
+        )
         is_count = selected_type == LoopType.COUNT
         is_duration = selected_type == LoopType.DURATION
         is_cv = selected_type in (LoopType.WHILE_CV, LoopType.UNTIL_CV)
@@ -790,7 +901,9 @@ class ActionInspectorView(QWidget):
             return
 
         self._set_editor_visible(True)
-        self._prop_header.setText(f"Action #{row + 1}: {action.action_type.value.upper()}")
+        self._prop_header.setText(
+            f"Action #{row + 1}: {action.action_type.value.upper()}"
+        )
         self._tabs.setCurrentIndex(0)
 
         match action:
@@ -802,8 +915,14 @@ class ActionInspectorView(QWidget):
                 self._stack.setCurrentWidget(self._page_move)
 
             case MouseButtonAction() as b:
-                self._btn_button_combo.setCurrentText(b.button.value.title())
-                self._btn_state_combo.setCurrentText(b.state.value.title())
+                btn_idx = self._btn_button_combo.findData(b.button)
+                if btn_idx >= 0:
+                    self._btn_button_combo.setCurrentIndex(btn_idx)
+
+                state_idx = self._btn_state_combo.findData(b.state)
+                if state_idx >= 0:
+                    self._btn_state_combo.setCurrentIndex(state_idx)
+
                 has_coords = b.x is not None and b.y is not None
                 self._btn_use_coords_check.setChecked(has_coords)
                 self._btn_x_spin.setEnabled(has_coords)
@@ -820,7 +939,9 @@ class ActionInspectorView(QWidget):
 
             case KeyboardKeyAction() as k:
                 self._key_vk_spin.setValue(k.vk_code)
-                self._key_state_combo.setCurrentText(k.state.value.title())
+                key_state_idx = self._key_state_combo.findData(k.state)
+                if key_state_idx >= 0:
+                    self._key_state_combo.setCurrentIndex(key_state_idx)
                 self._key_name_edit.setText(k.key_name)
                 self._stack.setCurrentWidget(self._page_key)
 
@@ -832,10 +953,26 @@ class ActionInspectorView(QWidget):
             case CvTriggerAction() as c:
                 self._cv_template_edit.setText(c.template_path)
                 self._cv_template_edit.setPlaceholderText(
-                    "(Embedded Image)" if c.image_base64 else "Path to template image file"
+                    "(Embedded Image)"
+                    if c.image_base64
+                    else "Path to template image file"
                 )
                 self._cv_confidence_spin.setValue(c.confidence_threshold)
                 self._cv_timeout_spin.setValue(c.timeout_seconds)
+
+                for i in range(self._cv_match_mode_combo.count()):
+                    if self._cv_match_mode_combo.itemData(i) == c.match_mode:
+                        self._cv_match_mode_combo.setCurrentIndex(i)
+                        break
+
+                matched_search = False
+                for i in range(self._cv_search_area_combo.count()):
+                    if self._cv_search_area_combo.itemData(i) == c.search_roi_padding:
+                        self._cv_search_area_combo.setCurrentIndex(i)
+                        matched_search = True
+                        break
+                if not matched_search:
+                    self._cv_search_area_combo.setCurrentIndex(0)
 
                 for i in range(self._cv_policy_combo.count()):
                     if self._cv_policy_combo.itemData(i) == c.failure_policy:
@@ -871,10 +1008,10 @@ class ActionInspectorView(QWidget):
                         self._cv_multi_policy_combo.setCurrentIndex(i)
                         break
 
-                count = len(m.branches)
-                self._cv_multi_status_label.setText(f"{count} candidate target{'s' if count != 1 else ''} registered")
-                names = [f"• {b.name} (min {b.confidence_threshold:.2f})" for b in m.branches]
-                self._cv_multi_candidates_label.setText("\n".join(names) if names else "No targets defined.")
+                count = len(m.actions) if m.actions else len(m.branches)
+                self._cv_multi_status_label.setText(
+                    f"{count} candidate target{'s' if count != 1 else ''} nested in block"
+                )
                 self._cv_multi_test_feedback.setStyleSheet(
                     "font-size: 10px; color: #8B949E; padding: 4px; border: 1px dashed #3E4451; border-radius: 4px;"
                 )
@@ -896,15 +1033,14 @@ class ActionInspectorView(QWidget):
                 self._loop_duration_spin.setValue(lp.duration_seconds)
                 self._loop_template_edit.setText(lp.template_path)
                 self._loop_template_edit.setPlaceholderText(
-                    "(Embedded Image)" if lp.image_base64 else "Path to template image file"
+                    "(Embedded Image)"
+                    if lp.image_base64
+                    else "Path to template image file"
                 )
                 self._loop_confidence_spin.setValue(lp.confidence_threshold)
                 self._loop_timeout_spin.setValue(lp.timeout_seconds)
                 self._on_loop_type_changed()
                 self._stack.setCurrentWidget(self._page_loop)
-
-            case _:
-                pass
 
     def set_target_coordinates(self, x: int, y: int) -> None:
         """Assigns picked coordinates directly into active action parameters and commits updates."""
@@ -941,8 +1077,12 @@ class ActionInspectorView(QWidget):
                     is_relative=self._move_relative_check.isChecked(),
                 )
             case MouseButtonAction() as b:
-                btn_item = _coerce_enum(self._btn_button_combo.currentData(), MouseButton)
-                state_item = _coerce_enum(self._btn_state_combo.currentData(), ButtonState)
+                btn_item = _coerce_enum(
+                    self._btn_button_combo.currentData(), MouseButton
+                )
+                state_item = _coerce_enum(
+                    self._btn_state_combo.currentData(), ButtonState
+                )
                 if btn_item is not None and state_item is not None:
                     use_coords = self._btn_use_coords_check.isChecked()
                     updated = MouseButtonAction(
@@ -963,7 +1103,9 @@ class ActionInspectorView(QWidget):
                     horizontal=self._scroll_horizontal_check.isChecked(),
                 )
             case KeyboardKeyAction() as k:
-                kstate_item = _coerce_enum(self._key_state_combo.currentData(), KeyState)
+                kstate_item = _coerce_enum(
+                    self._key_state_combo.currentData(), KeyState
+                )
                 if kstate_item is not None:
                     new_vk: int = self._key_vk_spin.value()
                     new_scan: int = k.scan_code if new_vk == k.vk_code else 0
@@ -986,14 +1128,38 @@ class ActionInspectorView(QWidget):
                     jitter_ms=self._delay_jitter_spin.value(),
                 )
             case CvTriggerAction() as c:
-                pol = _coerce_enum(self._cv_policy_combo.currentData(), CvFailurePolicy) or CvFailurePolicy.ABORT
-                comp = _coerce_enum(self._cv_comparison_combo.currentData(), TriggerComparison) or TriggerComparison.APPEARS
-                mouse_act = _coerce_enum(self._cv_mouse_action_combo.currentData(), CvMouseAction) or CvMouseAction.CLICK
+                pol = (
+                    _coerce_enum(
+                        self._cv_policy_combo.currentData(), CvFailurePolicy
+                    )
+                    or CvFailurePolicy.ABORT
+                )
+                comp = (
+                    _coerce_enum(
+                        self._cv_comparison_combo.currentData(),
+                        TriggerComparison,
+                    )
+                    or TriggerComparison.APPEARS
+                )
+                mouse_act = (
+                    _coerce_enum(
+                        self._cv_mouse_action_combo.currentData(), CvMouseAction
+                    )
+                    or CvMouseAction.CLICK
+                )
+                match_mode = (
+                    _coerce_enum(
+                        self._cv_match_mode_combo.currentData(), CvMatchMode
+                    )
+                    or CvMatchMode.STANDARD
+                )
+                search_padding = int(self._cv_search_area_combo.currentData() or 0)
 
                 new_template_path: str = self._cv_template_edit.text().strip()
                 retained_base64: str = (
                     c.image_base64
-                    if not new_template_path or new_template_path == c.template_path
+                    if not new_template_path
+                    or new_template_path == c.template_path
                     else ""
                 )
 
@@ -1014,13 +1180,18 @@ class ActionInspectorView(QWidget):
                     crop_y=c.crop_y,
                     crop_width=c.crop_width,
                     crop_height=c.crop_height,
+                    match_mode=match_mode,
+                    search_roi_padding=search_padding,
                 )
             case CvMultiTriggerAction() as m:
                 strat = (
                     _coerce_enum(self._cv_multi_strategy_combo.currentData(), CvSelectionStrategy)
                     or CvSelectionStrategy.FIRST_MATCH
                 )
-                pol = _coerce_enum(self._cv_multi_policy_combo.currentData(), CvFailurePolicy) or CvFailurePolicy.SKIP
+                pol = (
+                    _coerce_enum(self._cv_multi_policy_combo.currentData(), CvFailurePolicy)
+                    or CvFailurePolicy.SKIP
+                )
 
                 updated = CvMultiTriggerAction(
                     id=m.id,
@@ -1030,14 +1201,20 @@ class ActionInspectorView(QWidget):
                     strategy=strat,
                     failure_policy=pol,
                     branches=m.branches,
+                    actions=m.actions,
                 )
             case LoopContainerAction() as lp:
-                selected_type = _coerce_enum(self._loop_type_combo.currentData(), LoopType)
+                selected_type = _coerce_enum(
+                    self._loop_type_combo.currentData(), LoopType
+                )
                 if selected_type is not None:
-                    new_loop_template: str = self._loop_template_edit.text().strip()
+                    new_loop_template: str = (
+                        self._loop_template_edit.text().strip()
+                    )
                     retained_lp_base64: str = (
                         lp.image_base64
-                        if not new_loop_template or new_loop_template == lp.template_path
+                        if not new_loop_template
+                        or new_loop_template == lp.template_path
                         else ""
                     )
 
@@ -1054,8 +1231,6 @@ class ActionInspectorView(QWidget):
                         timeout_seconds=self._loop_timeout_spin.value(),
                         actions=lp.actions,
                     )
-            case _:
-                pass
 
         if updated is not None:
             self._current_action = updated

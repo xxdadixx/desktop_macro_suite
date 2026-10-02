@@ -29,6 +29,10 @@ if TYPE_CHECKING:
             self, src: ImageBuffer, code: int
         ) -> ImageBuffer: ...
 
+        def Canny(
+            self, image: ImageBuffer, threshold1: float, threshold2: float
+        ) -> ImageBuffer: ...
+
         def matchTemplate(
             self, image: ImageBuffer, templ: ImageBuffer, method: int
         ) -> object: ...
@@ -117,8 +121,12 @@ class TemplateMatcher:
         haystack: ImageBuffer,
         template: ImageBuffer | str | Path,
         threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+        match_mode: str = "standard",
     ) -> MatchResult:
-        """Searches for needle template within haystack image buffer."""
+        """Searches for needle template within haystack buffer with optional edge contour isolation."""
+        if haystack.size == 0 or haystack.ndim < 2:
+            return MatchResult(found=False, confidence=0.0)
+
         template_gray: ImageBuffer
         template_w: int
         template_h: int
@@ -131,7 +139,6 @@ class TemplateMatcher:
             if not clean_str:
                 raise ValueError("Template target identifier or Base64 payload cannot be empty.")
 
-            # Identify and decode Data URI schemes directly
             if clean_str.startswith("data:") and "," in clean_str:
                 _, template_gray = self.load_from_base64(clean_str)
             else:
@@ -165,13 +172,28 @@ class TemplateMatcher:
             else haystack
         )
 
+        # Apply Canny contour extraction to isolate text and icon silhouettes from moving backgrounds
+        search_haystack: ImageBuffer = haystack_gray
+        search_template: ImageBuffer = template_gray
+
+        if match_mode == "edge":
+            t_edges: ImageBuffer = np.ascontiguousarray(cv2.Canny(template_gray, 50, 150))
+            if np.count_nonzero(t_edges) > 0:
+                h_edges: ImageBuffer = np.ascontiguousarray(cv2.Canny(haystack_gray, 50, 150))
+                search_haystack = h_edges
+                search_template = t_edges
+
         match_matrix: object = cv2.matchTemplate(
-            haystack_gray, template_gray, MATCH_METHOD
+            search_haystack, search_template, MATCH_METHOD
         )
 
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(match_matrix)
         _ = min_val
         _ = min_loc
+
+        # Guard against division-by-zero NaNs produced on solid or uniform screen regions
+        if not np.isfinite(max_val):
+            return MatchResult(found=False, confidence=0.0)
 
         confidence: float = max(0.0, min(1.0, float(max_val)))
         if confidence < threshold:

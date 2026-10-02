@@ -45,7 +45,8 @@ class MacroOrchestrator:
             abort_vk_code=abort_vk_code,
         )
         self._capture_engine: InputCaptureEngine = InputCaptureEngine(
-            hook_manager=self._platform.hook_manager
+            hook_manager=self._platform.hook_manager,
+            abort_vk_code=abort_vk_code,
         )
         self._visual_evaluator: VisualTriggerEvaluator = (
             visual_evaluator

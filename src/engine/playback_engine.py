@@ -122,27 +122,34 @@ class MacroPlaybackEngine:
                 self._check_cancellation()
                 logger.info("--- Beginning iteration %d/%s ---", iteration + 1, iter_display)
 
-                for step_idx, action in enumerate(sequence.actions, start=1):
-                    self._check_cancellation()
-                    if not action.enabled:
-                        logger.debug(
-                            "Step [%d/%d] Action '%s' (%s) is disabled. Skipping.",
+                try:
+                    for step_idx, action in enumerate(sequence.actions, start=1):
+                        self._check_cancellation()
+                        if not action.enabled:
+                            logger.debug(
+                                "Step [%d/%d] Action '%s' (%s) is disabled. Skipping.",
+                                step_idx,
+                                total_actions,
+                                action.id[:8],
+                                action.action_type.value,
+                            )
+                            continue
+
+                        logger.info(
+                            "Step [%d/%d] Executing %s (ID: %s)",
                             step_idx,
                             total_actions,
+                            action.action_type.value.upper(),
                             action.id[:8],
-                            action.action_type.value,
                         )
-                        continue
 
+                        self._execute_action_with_telemetry(action, telemetry_callback)
+                except _BreakLoopSignal:
                     logger.info(
-                        "Step [%d/%d] Executing %s (ID: %s)",
-                        step_idx,
-                        total_actions,
-                        action.action_type.value.upper(),
-                        action.id[:8],
+                        "Break-loop signal received at top-level sequence for iteration %d. Terminating playback loop.",
+                        iteration + 1,
                     )
-
-                    self._execute_action_with_telemetry(action, telemetry_callback)
+                    break
 
                 iteration += 1
 

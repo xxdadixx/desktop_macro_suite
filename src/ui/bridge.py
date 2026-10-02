@@ -34,6 +34,9 @@ VK_SHIFT: Final[int] = 0x10
 VK_CONTROL: Final[int] = 0x11
 VK_C: Final[int] = 0x43
 VK_G: Final[int] = 0x47
+VK_R: Final[int] = 0x52
+VK_F5: Final[int] = 0x74
+VK_F6: Final[int] = 0x75
 VK_F7: Final[int] = 0x76
 VK_F8: Final[int] = 0x77
 
@@ -63,6 +66,9 @@ class UIBridge(QObject):
     error_occurred: Signal = Signal(str)
     roi_capture_requested: Signal = Signal()
     coord_pick_requested: Signal = Signal()
+    play_requested: Signal = Signal()
+    stop_requested: Signal = Signal()
+    record_toggle_requested: Signal = Signal()
 
     def __init__(
         self,
@@ -96,14 +102,25 @@ class UIBridge(QObject):
         if event.state != KeyState.KEY_DOWN:
             return
 
-        if self._orchestrator.is_playing:
-            return
-
         vk = event.vk_code
         is_ctrl = _is_vk_pressed(VK_CONTROL)
         is_shift = _is_vk_pressed(VK_SHIFT)
 
-        if (vk == VK_G and is_ctrl and not is_shift) or vk == VK_F7:
+        # F6 acts as an immediate stop/abort hotkey regardless of playback state
+        if vk == VK_F6:
+            self.stop_requested.emit()
+            self.abort()
+            return
+
+        # Suppress other global hotkeys during active sequence execution
+        if self._orchestrator.is_playing:
+            return
+
+        if vk == VK_F5:
+            self.play_requested.emit()
+        elif vk == VK_R and is_ctrl and not is_shift:
+            self.record_toggle_requested.emit()
+        elif (vk == VK_G and is_ctrl and not is_shift) or vk == VK_F7:
             self.roi_capture_requested.emit()
         elif (vk == VK_C and is_ctrl and is_shift) or vk == VK_F8:
             self.coord_pick_requested.emit()

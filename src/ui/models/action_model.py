@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Final, override
 import uuid
 
@@ -46,6 +45,7 @@ def _deep_clone_action(action: ActionNode) -> ActionNode:
         cloned_children = [_deep_clone_action(child) for child in action.actions]
         return action.model_copy(update={"id": new_id, "actions": cloned_children})
     if isinstance(action, CvMultiTriggerAction):
+        cloned_actions = [_deep_clone_action(child) for child in action.actions]
         cloned_branches = [
             b.model_copy(
                 update={
@@ -55,21 +55,23 @@ def _deep_clone_action(action: ActionNode) -> ActionNode:
             )
             for b in action.branches
         ]
-        return action.model_copy(update={"id": new_id, "branches": cloned_branches})
+        return action.model_copy(
+            update={"id": new_id, "actions": cloned_actions, "branches": cloned_branches}
+        )
     return action.model_copy(update={"id": new_id})
 
 
 def _collect_descendant_ids(node: ActionNode) -> set[str]:
     """Gathers the ID of the node and all transitive children contained within it."""
     result: set[str] = {node.id}
-    if isinstance(node, LoopContainerAction):
+    if isinstance(node, (LoopContainerAction, CvMultiTriggerAction)):
         for child in node.actions:
             result.update(_collect_descendant_ids(child))
-    elif isinstance(node, CvMultiTriggerAction):
-        for branch in node.branches:
-            result.update({branch.id})
-            for child in branch.actions:
-                result.update(_collect_descendant_ids(child))
+        if isinstance(node, CvMultiTriggerAction):
+            for branch in node.branches:
+                result.update({branch.id})
+                for child in branch.actions:
+                    result.update(_collect_descendant_ids(child))
     return result
 
 
@@ -83,11 +85,16 @@ def _prune_tree(actions: list[ActionNode], ids_to_remove: set[str]) -> list[Acti
             pruned_children = _prune_tree(a.actions, ids_to_remove)
             new_list.append(a.model_copy(update={"actions": pruned_children}))
         elif isinstance(a, CvMultiTriggerAction):
+            pruned_children = _prune_tree(a.actions, ids_to_remove)
             updated_branches: list[CvBranchCase] = []
             for b in a.branches:
                 pruned_branch_actions = _prune_tree(b.actions, ids_to_remove)
                 updated_branches.append(b.model_copy(update={"actions": pruned_branch_actions}))
-            new_list.append(a.model_copy(update={"branches": updated_branches}))
+            new_list.append(
+                a.model_copy(
+                    update={"actions": pruned_children, "branches": updated_branches}
+                )
+            )
         else:
             new_list.append(a)
     return new_list
@@ -107,7 +114,7 @@ def _insert_in_tree(
     for a in actions:
         if a.id == target_id:
             found = True
-            if into_container_first and isinstance(a, LoopContainerAction):
+            if into_container_first and isinstance(a, (LoopContainerAction, CvMultiTriggerAction)):
                 new_children = list(to_insert) + list(a.actions)
                 new_list.append(a.model_copy(update={"actions": new_children}))
             elif not insert_after:
@@ -117,7 +124,7 @@ def _insert_in_tree(
                 new_list.append(a)
                 new_list.extend(to_insert)
         else:
-            if isinstance(a, LoopContainerAction):
+            if isinstance(a, (LoopContainerAction, CvMultiTriggerAction)):
                 sub_found, sub_children = _insert_in_tree(
                     a.actions, target_id, to_insert, insert_after, into_container_first
                 )
@@ -126,18 +133,6 @@ def _insert_in_tree(
                     new_list.append(a.model_copy(update={"actions": sub_children}))
                 else:
                     new_list.append(a)
-            elif isinstance(a, CvMultiTriggerAction):
-                updated_branches: list[CvBranchCase] = []
-                for b in a.branches:
-                    sub_found, sub_children = _insert_in_tree(
-                        b.actions, target_id, to_insert, insert_after, into_container_first
-                    )
-                    if sub_found:
-                        found = True
-                        updated_branches.append(b.model_copy(update={"actions": sub_children}))
-                    else:
-                        updated_branches.append(b)
-                new_list.append(a.model_copy(update={"branches": updated_branches}))
             else:
                 new_list.append(a)
 
@@ -157,7 +152,7 @@ class FlatActionRow:
 
 
 class ActionSequenceModel(QAbstractTableModel):
-    """Qt Table Model virtualizing hierarchical MacroSequence AST loops as indented code blocks."""
+    """Qt Table Model virtualizing hierarchical AST loops and multi-CV blocks as indented code."""
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -185,7 +180,7 @@ class ActionSequenceModel(QAbstractTableModel):
             for i, act in enumerate(actions):
                 is_last: bool = i == total - 1
 
-                if isinstance(act, LoopContainerAction):
+                if isinstance(act, (LoopContainerAction, CvMultiTriggerAction)):
                     header_row = FlatActionRow(
                         action=act,
                         depth=depth,
@@ -231,18 +226,13 @@ class ActionSequenceModel(QAbstractTableModel):
             return 0
 
         if target_row is None or not (0 <= target_row < len(self._flat_rows)):
-            last_flat = self._flat_rows[-1]
-            if isinstance(last_flat.action, LoopContainerAction) and not last_flat.action.actions:
-                target_flat = last_flat
-            else:
-                self.beginResetModel()
-                self._root_actions.append(action)
-                self._rebuild_flat_rows()
-                self.endResetModel()
-                return self.find_row_by_id(action.id)
-        else:
-            target_flat = self._flat_rows[target_row]
+            self.beginResetModel()
+            self._root_actions.append(action)
+            self._rebuild_flat_rows()
+            self.endResetModel()
+            return self.find_row_by_id(action.id)
 
+        target_flat = self._flat_rows[target_row]
         target_id = target_flat.action.id
         into_container_first = target_flat.is_loop_header
 
@@ -285,6 +275,7 @@ class ActionSequenceModel(QAbstractTableModel):
 
     @override
     def headerData(
+        self,
         section: int,
         orientation: Qt.Orientation,
         role: int = int(Qt.ItemDataRole.DisplayRole),
@@ -363,9 +354,8 @@ class ActionSequenceModel(QAbstractTableModel):
                     return f'{prefix}if not vision.exists("{target}"): break{mouse_suffix}'
                 return f'{prefix}assert vision.wait_for("{target}", timeout={c.timeout_seconds:.1f}s){mouse_suffix}'
             case CvMultiTriggerAction() as m:
-                target_names = [b.name for b in m.branches]
-                targets_str = ", ".join(f'"{t}"' for t in target_names) if target_names else "none"
-                return f"{prefix}switch vision.match_any([{targets_str}], strategy={m.strategy.value}, timeout={m.timeout_seconds:.1f}s)"
+                count = len(m.actions) if m.actions else len(m.branches)
+                return f"{prefix}switch vision.match_any({count} candidate targets, strategy={m.strategy.value.upper()}, timeout={m.timeout_seconds:.1f}s):"
             case LoopContainerAction() as lp:
                 match lp.loop_type:
                     case LoopType.COUNT:
@@ -493,12 +483,13 @@ class ActionSequenceModel(QAbstractTableModel):
                     )
 
             case CvMultiTriggerAction() as m:
-                count = len(m.branches)
+                count = len(m.actions) if m.actions else len(m.branches)
                 content = (
                     f'<span style="color:#C678DD; font-weight:bold;">switch</span> '
                     f'<span style="color:#61AFEF;">vision</span>.<span style="color:#56B6C2;">match_any</span>('
                     f'<span style="color:#D19A66;">{count} candidate targets</span>, '
                     f'<span style="color:#E06C75;">strategy</span>=<span style="color:#E5C07B;">{m.strategy.value.upper()}</span>)'
+                    f'<span style="color:#ABB2BF;">:</span>'
                 )
 
             case LoopContainerAction() as lp:
@@ -552,7 +543,8 @@ class ActionSequenceModel(QAbstractTableModel):
             case CvTriggerAction() as c:
                 return f"{c.timeout_seconds:.1f} s"
             case CvMultiTriggerAction() as m:
-                return f"≤ {m.timeout_seconds:.1f} s ({len(m.branches)}T)"
+                count = len(m.actions) if m.actions else len(m.branches)
+                return f"≤ {m.timeout_seconds:.1f} s ({count}T)"
             case LoopContainerAction() as lp:
                 match lp.loop_type:
                     case LoopType.COUNT:
@@ -563,78 +555,138 @@ class ActionSequenceModel(QAbstractTableModel):
                         return f"{lp.duration_seconds:.1f} s"
                     case LoopType.WHILE_CV | LoopType.UNTIL_CV:
                         return f"≤ {lp.timeout_seconds:.1f} s"
-            case _:
+            case MouseButtonAction() | MouseScrollAction() | KeyboardKeyAction():
                 return "0.0 ms"
 
-    def combine_cv_actions_to_multi(self, rows: list[int]) -> int:
-        """Consolidates selected individual CvTriggerAction items into a single unified CvMultiTriggerAction."""
+    def wrap_actions_in_multi_cv(
+        self,
+        rows: list[int],
+        strategy: CvSelectionStrategy = CvSelectionStrategy.FIRST_MATCH,
+        failure_policy: CvFailurePolicy = CvFailurePolicy.SKIP,
+        timeout_seconds: float = 10.0,
+    ) -> int:
+        """Wraps selected timeline actions into a unified CvMultiTriggerAction container block."""
         valid_rows = sorted({r for r in rows if 0 <= r < len(self._flat_rows)})
-        cv_actions: list[CvTriggerAction] = []
-        for r in valid_rows:
-            action = self._flat_rows[r].action
-            if isinstance(action, CvTriggerAction):
-                cv_actions.append(action)
-
-        if len(cv_actions) < 2:
-            return -1
-
-        branches: list[CvBranchCase] = []
-        for idx, cv in enumerate(cv_actions, start=1):
-            name = Path(cv.template_path).stem if cv.template_path else f"Target #{idx}"
-            branches.append(
-                CvBranchCase(
-                    name=name,
-                    template_path=cv.template_path,
-                    image_base64=cv.image_base64,
-                    confidence_threshold=cv.confidence_threshold,
-                    mouse_action=cv.mouse_action,
-                    offset_x=cv.offset_x,
-                    offset_y=cv.offset_y,
-                    crop_x=cv.crop_x,
-                    crop_y=cv.crop_y,
-                    crop_width=cv.crop_width,
-                    crop_height=cv.crop_height,
-                    actions=[],
-                )
+        if not valid_rows:
+            new_multi = CvMultiTriggerAction(
+                strategy=strategy,
+                failure_policy=failure_policy,
+                timeout_seconds=timeout_seconds,
+                actions=[],
             )
+            self.append_action(new_multi)
+            return len(self._flat_rows) - 1
 
-        multi_action = CvMultiTriggerAction(
-            timeout_seconds=max(cv.timeout_seconds for cv in cv_actions),
-            strategy=CvSelectionStrategy.FIRST_MATCH,
-            failure_policy=CvFailurePolicy.SKIP,
-            branches=branches,
-        )
+        raw_selected_actions: list[ActionNode] = [self._flat_rows[r].action for r in valid_rows]
+        first_row_id: str = self._flat_rows[valid_rows[0]].action.id
+        new_multi_id: str = str(uuid.uuid4())
 
-        first_row_id = cv_actions[0].id
-        ids_to_remove = {cv.id for cv in cv_actions}
+        all_descendants: set[str] = set()
+        for act in raw_selected_actions:
+            if isinstance(act, (LoopContainerAction, CvMultiTriggerAction)):
+                for child in act.actions:
+                    all_descendants.update(_collect_descendant_ids(child))
 
-        def _replace_in_tree(actions: list[ActionNode]) -> list[ActionNode]:
+        filtered_actions_to_wrap: list[ActionNode] = [
+            act for act in raw_selected_actions if act.id not in all_descendants
+        ]
+        selected_ids: set[str] = {act.id for act in filtered_actions_to_wrap}
+
+        def _wrap_tree(actions: list[ActionNode]) -> list[ActionNode]:
             new_list: list[ActionNode] = []
-            replaced = False
+            multi_inserted = False
+
             for a in actions:
-                if a.id == first_row_id and not replaced:
-                    new_list.append(multi_action)
-                    replaced = True
+                if a.id == first_row_id and not multi_inserted:
+                    multi_block = CvMultiTriggerAction(
+                        id=new_multi_id,
+                        strategy=strategy,
+                        failure_policy=failure_policy,
+                        timeout_seconds=timeout_seconds,
+                        actions=filtered_actions_to_wrap,
+                    )
+                    new_list.append(multi_block)
+                    multi_inserted = True
                     continue
-                if a.id in ids_to_remove:
+                if a.id in selected_ids:
                     continue
-                if isinstance(a, LoopContainerAction):
-                    new_list.append(a.model_copy(update={"actions": _replace_in_tree(a.actions)}))
-                elif isinstance(a, CvMultiTriggerAction):
-                    updated_branches: list[CvBranchCase] = []
-                    for b in a.branches:
-                        updated_branches.append(b.model_copy(update={"actions": _replace_in_tree(b.actions)}))
-                    new_list.append(a.model_copy(update={"branches": updated_branches}))
+                if isinstance(a, (LoopContainerAction, CvMultiTriggerAction)):
+                    children = _wrap_tree(a.actions)
+                    new_list.append(a.model_copy(update={"actions": children}))
                 else:
                     new_list.append(a)
             return new_list
 
         self.beginResetModel()
-        self._root_actions = _replace_in_tree(self._root_actions)
+        self._root_actions = _wrap_tree(self._root_actions)
         self._rebuild_flat_rows()
         self.endResetModel()
 
-        return self.find_row_by_id(multi_action.id)
+        idx = self.find_row_by_id(new_multi_id)
+        return idx if idx >= 0 else 0
+
+    def combine_cv_actions_to_multi(self, rows: list[int]) -> int:
+        """Alias for wrap_actions_in_multi_cv to maintain backwards compatibility."""
+        return self.wrap_actions_in_multi_cv(rows)
+
+    def wrap_actions_in_loop(
+        self,
+        rows: list[int],
+        loop_type: LoopType = LoopType.COUNT,
+        iterations: int = 2,
+    ) -> int:
+        valid_rows = sorted({r for r in rows if 0 <= r < len(self._flat_rows)})
+        if not valid_rows:
+            new_loop = LoopContainerAction(loop_type=loop_type, iterations=iterations, actions=[])
+            self.append_action(new_loop)
+            return len(self._flat_rows) - 1
+
+        raw_selected_actions: list[ActionNode] = [self._flat_rows[r].action for r in valid_rows]
+        first_row_id: str = self._flat_rows[valid_rows[0]].action.id
+        new_loop_id: str = str(uuid.uuid4())
+
+        all_descendants: set[str] = set()
+        for act in raw_selected_actions:
+            if isinstance(act, (LoopContainerAction, CvMultiTriggerAction)):
+                for child in act.actions:
+                    all_descendants.update(_collect_descendant_ids(child))
+
+        filtered_actions_to_wrap: list[ActionNode] = [
+            act for act in raw_selected_actions if act.id not in all_descendants
+        ]
+        selected_ids: set[str] = {act.id for act in filtered_actions_to_wrap}
+
+        def _wrap_tree(actions: list[ActionNode]) -> list[ActionNode]:
+            new_list: list[ActionNode] = []
+            loop_inserted = False
+
+            for a in actions:
+                if a.id == first_row_id and not loop_inserted:
+                    loop_block = LoopContainerAction(
+                        id=new_loop_id,
+                        loop_type=loop_type,
+                        iterations=iterations,
+                        actions=filtered_actions_to_wrap,
+                    )
+                    new_list.append(loop_block)
+                    loop_inserted = True
+                    continue
+                if a.id in selected_ids:
+                    continue
+                if isinstance(a, (LoopContainerAction, CvMultiTriggerAction)):
+                    children = _wrap_tree(a.actions)
+                    new_list.append(a.model_copy(update={"actions": children}))
+                else:
+                    new_list.append(a)
+            return new_list
+
+        self.beginResetModel()
+        self._root_actions = _wrap_tree(self._root_actions)
+        self._rebuild_flat_rows()
+        self.endResetModel()
+
+        idx = self.find_row_by_id(new_loop_id)
+        return idx if idx >= 0 else 0
 
     def set_sequence(self, sequence: MacroSequence) -> None:
         self.beginResetModel()
@@ -772,19 +824,11 @@ class ActionSequenceModel(QAbstractTableModel):
                 if a.id == target_id:
                     actions[idx] = updated
                     return True
-                if isinstance(a, LoopContainerAction):
+                if isinstance(a, (LoopContainerAction, CvMultiTriggerAction)):
                     children_copy = list(a.actions)
                     if _replace(children_copy):
                         actions[idx] = a.model_copy(update={"actions": children_copy})
                         return True
-                elif isinstance(a, CvMultiTriggerAction):
-                    updated_branches = list(a.branches)
-                    for b_idx, b in enumerate(updated_branches):
-                        branch_children = list(b.actions)
-                        if _replace(branch_children):
-                            updated_branches[b_idx] = b.model_copy(update={"actions": branch_children})
-                            actions[idx] = a.model_copy(update={"branches": updated_branches})
-                            return True
             return False
 
         if not _replace(self._root_actions):
@@ -803,7 +847,7 @@ class ActionSequenceModel(QAbstractTableModel):
         else:
             def _insert(actions: list[ActionNode]) -> bool:
                 for idx, a in enumerate(actions):
-                    if isinstance(a, LoopContainerAction):
+                    if isinstance(a, (LoopContainerAction, CvMultiTriggerAction)):
                         if a.id == target_parent_id:
                             new_children = list(a.actions)
                             new_children.append(action)
@@ -842,113 +886,6 @@ class ActionSequenceModel(QAbstractTableModel):
         new_indices = self.move_action_hierarchy([source_row], dest_row, insert_below=insert_below)
         return len(new_indices) > 0
 
-    def duplicate_actions(self, rows: list[int]) -> list[int]:
-        valid_rows = sorted({r for r in rows if 0 <= r < len(self._flat_rows)})
-        if not valid_rows:
-            return []
-
-        inserted_ids: list[str] = []
-        for r in reversed(valid_rows):
-            target_flat = self._flat_rows[r]
-            original = target_flat.action
-            parent_id = target_flat.parent_loop_id
-            cloned = _deep_clone_action(original)
-            inserted_ids.append(cloned.id)
-
-            if parent_id is None:
-                root_idx = [a.id for a in self._root_actions].index(original.id)
-                self._root_actions.insert(root_idx + 1, cloned)
-            else:
-                def _insert_in_loop(actions: list[ActionNode]) -> list[ActionNode]:
-                    new_list: list[ActionNode] = []
-                    for a in actions:
-                        new_list.append(a)
-                        if isinstance(a, LoopContainerAction):
-                            if a.id == parent_id:
-                                child_copy = list(a.actions)
-                                c_idx = [c.id for c in child_copy].index(original.id)
-                                child_copy.insert(c_idx + 1, cloned)
-                                new_list[-1] = a.model_copy(update={"actions": child_copy})
-                            else:
-                                new_list[-1] = a.model_copy(update={"actions": _insert_in_loop(a.actions)})
-                    return new_list
-
-                self._root_actions = _insert_in_loop(self._root_actions)
-
-        self.beginResetModel()
-        self._rebuild_flat_rows()
-        self.endResetModel()
-
-        return sorted([self.find_row_by_id(cid) for cid in inserted_ids if self.find_row_by_id(cid) >= 0])
-
-    def wrap_actions_in_loop(
-        self,
-        rows: list[int],
-        loop_type: LoopType = LoopType.COUNT,
-        iterations: int = 2,
-    ) -> int:
-        valid_rows = sorted({r for r in rows if 0 <= r < len(self._flat_rows)})
-        if not valid_rows:
-            new_loop = LoopContainerAction(loop_type=loop_type, iterations=iterations, actions=[])
-            self.append_action(new_loop)
-            return len(self._flat_rows) - 1
-
-        raw_selected_actions: list[ActionNode] = [self._flat_rows[r].action for r in valid_rows]
-        first_row_id: str = self._flat_rows[valid_rows[0]].action.id
-        new_loop_id: str = str(uuid.uuid4())
-
-        all_descendants: set[str] = set()
-        for act in raw_selected_actions:
-            if isinstance(act, LoopContainerAction):
-                for child in act.actions:
-                    all_descendants.update(_collect_descendant_ids(child))
-            elif isinstance(act, CvMultiTriggerAction):
-                for branch in act.branches:
-                    for child in branch.actions:
-                        all_descendants.update(_collect_descendant_ids(child))
-
-        filtered_actions_to_wrap: list[ActionNode] = [
-            act for act in raw_selected_actions if act.id not in all_descendants
-        ]
-        selected_ids: set[str] = {act.id for act in filtered_actions_to_wrap}
-
-        def _wrap_tree(actions: list[ActionNode]) -> list[ActionNode]:
-            new_list: list[ActionNode] = []
-            loop_inserted = False
-
-            for a in actions:
-                if a.id == first_row_id and not loop_inserted:
-                    loop_block = LoopContainerAction(
-                        id=new_loop_id,
-                        loop_type=loop_type,
-                        iterations=iterations,
-                        actions=filtered_actions_to_wrap,
-                    )
-                    new_list.append(loop_block)
-                    loop_inserted = True
-                    continue
-                if a.id in selected_ids:
-                    continue
-                if isinstance(a, LoopContainerAction):
-                    children = _wrap_tree(a.actions)
-                    new_list.append(a.model_copy(update={"actions": children}))
-                elif isinstance(a, CvMultiTriggerAction):
-                    updated_branches: list[CvBranchCase] = []
-                    for b in a.branches:
-                        updated_branches.append(b.model_copy(update={"actions": _wrap_tree(b.actions)}))
-                    new_list.append(a.model_copy(update={"branches": updated_branches}))
-                else:
-                    new_list.append(a)
-            return new_list
-
-        self.beginResetModel()
-        self._root_actions = _wrap_tree(self._root_actions)
-        self._rebuild_flat_rows()
-        self.endResetModel()
-
-        idx = self.find_row_by_id(new_loop_id)
-        return idx if idx >= 0 else 0
-
     def indent_action(self, row: int) -> bool:
         if not (1 <= row < len(self._flat_rows)):
             return False
@@ -957,7 +894,7 @@ class ActionSequenceModel(QAbstractTableModel):
         prev_row = self._flat_rows[row - 1]
 
         target_loop_id: str | None = None
-        if isinstance(prev_row.action, LoopContainerAction):
+        if isinstance(prev_row.action, (LoopContainerAction, CvMultiTriggerAction)):
             target_loop_id = prev_row.action.id
         elif prev_row.parent_loop_id is not None:
             target_loop_id = prev_row.parent_loop_id
@@ -972,7 +909,7 @@ class ActionSequenceModel(QAbstractTableModel):
             for a in actions:
                 if a.id == action_to_move.id:
                     continue
-                if isinstance(a, LoopContainerAction):
+                if isinstance(a, (LoopContainerAction, CvMultiTriggerAction)):
                     if a.id == target_loop_id:
                         new_children = list(a.actions)
                         new_children.append(action_to_move)
@@ -1004,7 +941,7 @@ class ActionSequenceModel(QAbstractTableModel):
         def _outdent_tree(actions: list[ActionNode]) -> list[ActionNode]:
             new_list: list[ActionNode] = []
             for a in actions:
-                if isinstance(a, LoopContainerAction):
+                if isinstance(a, (LoopContainerAction, CvMultiTriggerAction)):
                     if a.id == parent_loop_id:
                         pruned_children = [c for c in a.actions if c.id != action_to_move.id]
                         new_list.append(a.model_copy(update={"actions": pruned_children}))

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.ast import (
+    CvMultiTriggerAction,
     CvTriggerAction,
     DelayAction,
     KeyboardKeyAction,
@@ -63,6 +64,7 @@ class MainWindow(QMainWindow):
         self._bridge: UIBridge = bridge
         self._model: ActionSequenceModel = model
         self._current_file_path: str | None = None
+        self._recrop_target_row: int | None = None
 
         self.setWindowTitle("Untitled Sequence - Desktop Automation Suite")
         self.resize(1200, 850)
@@ -128,21 +130,33 @@ class MainWindow(QMainWindow):
 
         self._act_record: QAction = QAction("● Record (Ctrl+R)", self)
         self._act_record.setShortcut(QKeySequence("Ctrl+R"))
+        self._act_record.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self._act_record.setToolTip("Toggle hardware event recording (Ctrl+R)")
         self._act_record.triggered.connect(self._on_toggle_record)
         toolbar.addAction(self._act_record)
 
         self._act_play: QAction = QAction("▶ Play (F5)", self)
         self._act_play.setShortcut(QKeySequence("F5"))
+        self._act_play.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self._act_play.setToolTip("Execute active macro sequence (F5)")
         self._act_play.triggered.connect(self._on_play)
         toolbar.addAction(self._act_play)
 
         self._act_stop: QAction = QAction("⏹ Stop (F6)", self)
         self._act_stop.setShortcut(QKeySequence("F6"))
+        self._act_stop.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self._act_stop.setToolTip("Abort active playback or recording (F6)")
-        self._act_stop.triggered.connect(self._bridge.abort)
+        self._act_stop.triggered.connect(self._on_stop)
         toolbar.addAction(self._act_stop)
+
+        # Register actions with the top-level window to ensure global capture within the application
+        self.addAction(self._act_new)
+        self.addAction(self._act_open)
+        self.addAction(self._act_save)
+        self.addAction(self._act_save_as)
+        self.addAction(self._act_record)
+        self.addAction(self._act_play)
+        self.addAction(self._act_stop)
 
         toolbar.addSeparator()
 
@@ -150,11 +164,13 @@ class MainWindow(QMainWindow):
         self._act_capture_roi.setToolTip("Capture Region of Interest for visual template gate (Global: Ctrl+G / F7)")
         self._act_capture_roi.triggered.connect(self._start_roi_capture)
         toolbar.addAction(self._act_capture_roi)
+        self.addAction(self._act_capture_roi)
 
         self._act_pick_coord: QAction = QAction("Pick Coordinate", self)
         self._act_pick_coord.setToolTip("Drag or click crosshair to set action coordinates (Global: Ctrl+Shift+C / F8)")
         self._act_pick_coord.triggered.connect(self._start_coord_pick)
         toolbar.addAction(self._act_pick_coord)
+        self.addAction(self._act_pick_coord)
 
         toolbar.addSeparator()
 
@@ -165,6 +181,7 @@ class MainWindow(QMainWindow):
         self._act_toggle_logs.setShortcut(QKeySequence("Ctrl+Shift+L"))
         self._act_toggle_logs.toggled.connect(self._on_toggle_log_dock)
         toolbar.addAction(self._act_toggle_logs)
+        self.addAction(self._act_toggle_logs)
 
     def _build_log_console_dock(self) -> None:
         self._log_dock: QDockWidget = QDockWidget("Operation Logs & Diagnostics", self)
@@ -240,6 +257,7 @@ class MainWindow(QMainWindow):
         self._inspector.action_updated.connect(self._on_action_updated)
         self._inspector.action_created.connect(self._on_action_created)
         self._inspector.request_cv_capture.connect(self._start_roi_capture)
+        self._inspector.request_recrop_cv.connect(self._start_recrop_roi)
         self._inspector.request_coordinate_pick.connect(self._start_coord_pick)
         self._inspector.request_locate_crop.connect(self._on_locate_crop)
         self._inspector.request_test_cv.connect(self._on_test_cv_action)
@@ -251,11 +269,29 @@ class MainWindow(QMainWindow):
         self._bridge.roi_capture_requested.connect(self._start_roi_capture)
         self._bridge.coord_pick_requested.connect(self._start_coord_pick)
 
+        # Connect global OS-level hook events dispatched from UIBridge
+        self._bridge.play_requested.connect(self._on_play)
+        self._bridge.stop_requested.connect(self._on_stop)
+        self._bridge.record_toggle_requested.connect(self._on_toggle_record)
+
     @Slot()
     def _start_roi_capture(self) -> None:
         if self._roi_selector.isVisible() or self._coord_picker.isVisible():
             return
+        self._recrop_target_row = None
         self._roi_selector.start_selection()
+
+    @Slot()
+    def _start_recrop_roi(self) -> None:
+        if self._roi_selector.isVisible() or self._coord_picker.isVisible():
+            return
+        selected = self._timeline.selected_rows()
+        self._recrop_target_row = selected[0] if selected else None
+        self._roi_selector.start_selection()
+
+    @Slot()
+    def _on_stop(self) -> None:
+        self._bridge.abort()
 
     @Slot()
     def _start_coord_pick(self) -> None:
@@ -304,7 +340,12 @@ class MainWindow(QMainWindow):
                 branch, result = self._bridge.test_cv_multi_action(action)
                 self._inspector.display_cv_multi_test_result(branch, result)
 
-                if branch is not None and result is not None and result.found and result.region is not None:
+                if (
+                    branch is not None
+                    and result is not None
+                    and result.found
+                    and result.region is not None
+                ):
                     self._target_overlay.highlight(
                         rect=result.region,
                         color=QColor(0, 230, 118),
@@ -319,7 +360,9 @@ class MainWindow(QMainWindow):
                         "CV Multi-Test: No candidate targets matched on active screen."
                     )
             except Exception as err:
-                QMessageBox.warning(self, "CV Test Error", f"Failed to test multi-template match: {err}")
+                QMessageBox.warning(
+                    self, "CV Test Error", f"Failed to test multi-template match: {err}"
+                )
                 self._status_bar.showMessage(f"CV Test Error: {err}")
 
     @Slot(int, object)
@@ -333,6 +376,7 @@ class MainWindow(QMainWindow):
                 KeyboardKeyAction,
                 DelayAction,
                 CvTriggerAction,
+                CvMultiTriggerAction,
                 LoopContainerAction,
             ),
         ):
@@ -361,6 +405,7 @@ class MainWindow(QMainWindow):
                 KeyboardKeyAction,
                 DelayAction,
                 CvTriggerAction,
+                CvMultiTriggerAction,
                 LoopContainerAction,
             ),
         ):
@@ -473,6 +518,38 @@ class MainWindow(QMainWindow):
     def _on_roi_captured(self, roi: Rect2D) -> None:
         try:
             b64_str: str = self._bridge.capture_template_base64(roi)
+
+            # In-place update when modifying an existing action
+            if self._recrop_target_row is not None and self._recrop_target_row >= 0:
+                target_action = self._model.get_action(self._recrop_target_row)
+                if isinstance(target_action, CvTriggerAction):
+                    updated_action = target_action.model_copy(
+                        update={
+                            "image_base64": b64_str,
+                            "crop_x": roi.x,
+                            "crop_y": roi.y,
+                            "crop_width": roi.width,
+                            "crop_height": roi.height,
+                        }
+                    )
+                    self._model.update_action(self._recrop_target_row, updated_action)
+                    self._inspector.inspect(self._recrop_target_row, updated_action)
+                    self._status_bar.showMessage(
+                        f"Re-captured template for action #{self._recrop_target_row + 1} ({roi.width}×{roi.height} px)."
+                    )
+                    self._target_overlay.highlight(
+                        rect=roi,
+                        color=QColor(0, 229, 255),
+                        label=f"Updated Template ({roi.width}×{roi.height} px)",
+                        duration_ms=1200,
+                    )
+                    self._recrop_target_row = None
+                    self.showNormal()
+                    self.raise_()
+                    self.activateWindow()
+                    return
+
+            self._recrop_target_row = None
             trigger_action = CvTriggerAction(
                 image_base64=b64_str,
                 confidence_threshold=0.8,
@@ -507,6 +584,7 @@ class MainWindow(QMainWindow):
             self.raise_()
             self.activateWindow()
         except Exception as e:
+            self._recrop_target_row = None
             QMessageBox.critical(self, "Template Error", f"Failed to grab template: {e}")
 
     @Slot(Point2D)

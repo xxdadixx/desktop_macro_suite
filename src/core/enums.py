@@ -82,3 +82,8 @@ class CvMouseAction(StrEnum):
 class CvSelectionStrategy(StrEnum):
     FIRST_MATCH = "first_match"          # Executes the first candidate exceeding threshold (priority order)
     BEST_CONFIDENCE = "best_confidence"  # Evaluates all candidates and executes the highest match score
+
+@unique
+class CvMatchMode(StrEnum):
+    STANDARD = "standard"  # Standard normalized grayscale cross-correlation
+    EDGE = "edge"          # Canny edge contour matching for semi-transparent/moving backgrounds
