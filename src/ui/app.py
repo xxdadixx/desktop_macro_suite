@@ -37,13 +37,13 @@ def _apply_dark_theme(app: QApplication) -> None:
 
 def run_app() -> int:
     """Initializes logging, Qt application runtime, orchestration core, and primary view."""
-    # Initialize logging subsystem before spawning application components
+    app: QApplication = QApplication(sys.argv)
+    _apply_dark_theme(app)
+
+    # Initialize logging subsystem after QApplication construction
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     setup_logging(log_level=logging.INFO, log_file_path=log_dir / "desktop_macro_suite.log")
-
-    app: QApplication = QApplication(sys.argv)
-    _apply_dark_theme(app)
 
     orchestrator: MacroOrchestrator = MacroOrchestrator()
     orchestrator.initialize()

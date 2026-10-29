@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import uuid
-from typing import Annotated, Literal, TypeAlias, Union
+from typing import Annotated, Final, Literal, TypeAlias, Union
 
 from pydantic import (
     BaseModel,
@@ -17,11 +19,33 @@ from .enums import (
     CvMatchMode,
     CvMouseAction,
     CvSelectionStrategy,
+    FlowSignal,
     KeyState,
     LoopType,
     MouseButton,
+    RabbitSlot,
     TriggerComparison,
+    VariableOp,
 )
+
+__all__: Final[list[str]] = [
+    "ActionNode",
+    "BaseAction",
+    "CvBranchCase",
+    "CvMultiTriggerAction",
+    "CvTriggerAction",
+    "DelayAction",
+    "FlowControlAction",
+    "IfElseContainerAction",
+    "KeyboardKeyAction",
+    "LoopContainerAction",
+    "MacroSequence",
+    "MiniGameSolverAction",
+    "MouseButtonAction",
+    "MouseMoveAction",
+    "MouseScrollAction",
+    "SetVariableAction",
+]
 
 
 def _generate_action_id() -> str:
@@ -162,7 +186,7 @@ class CvBranchCase(BaseModel):
     crop_height: int | None = Field(default=None)
     match_mode: CvMatchMode = Field(default=CvMatchMode.STANDARD)
     search_roi_padding: int = Field(default=0, ge=0)
-    actions: list["ActionNode"] = Field(default_factory=list)
+    actions: list[ActionNode] = Field(default_factory=list)
 
 
 class CvMultiTriggerAction(BaseAction):
@@ -186,7 +210,7 @@ class CvMultiTriggerAction(BaseAction):
         default_factory=list,
         description="List of candidate templates and their corresponding actions (legacy format)",
     )
-    actions: list["ActionNode"] = Field(
+    actions: list[ActionNode] = Field(
         default_factory=list,
         description="Nested child actions / candidate visual triggers evaluated within this container block",
     )
@@ -218,7 +242,56 @@ class LoopContainerAction(BaseAction):
         ge=0.0,
         description="Safety timeout limit for condition-based loops",
     )
-    actions: list["ActionNode"] = Field(default_factory=list)
+    actions: list[ActionNode] = Field(default_factory=list)
+
+
+class SetVariableAction(BaseAction):
+    """Mutates or initializes a variable in the active execution context."""
+
+    action_type: Literal[ActionType.SET_VARIABLE] = ActionType.SET_VARIABLE
+    name: str = Field(..., min_length=1, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    expression: str = Field(..., description="Literal value or expression string")
+    operation: VariableOp = Field(default=VariableOp.ASSIGN)
+
+
+class IfElseContainerAction(BaseAction):
+    """Evaluates a condition against execution context and branches between then/else blocks."""
+
+    action_type: Literal[ActionType.IF_ELSE_CONTAINER] = ActionType.IF_ELSE_CONTAINER
+    condition: str = Field(..., min_length=1, description="Boolean expression evaluated against variables")
+    then_actions: list[ActionNode] = Field(default_factory=list)
+    else_actions: list[ActionNode] = Field(default_factory=list)
+
+
+class FlowControlAction(BaseAction):
+    """Interrupts loop iterations or sequence execution (break, continue, abort)."""
+
+    action_type: Literal[ActionType.FLOW_CONTROL] = ActionType.FLOW_CONTROL
+    signal: FlowSignal = FlowSignal.BREAK
+    reason: str = Field(default="", description="Optional abort description or comment")
+
+
+class MiniGameSolverAction(BaseAction):
+    """Parses mini-game board state, evaluates topological plate values, and clicks the max-yield tile."""
+
+    action_type: Literal[ActionType.MINIGAME_SOLVER] = ActionType.MINIGAME_SOLVER
+    player_slot: RabbitSlot = Field(
+        default=RabbitSlot.AUTO,
+        description="Assigned player rabbit slot or auto-detection mode",
+    )
+    player_name: str = Field(
+        default="DADI_",
+        description="Target user account name identifier",
+    )
+    auto_click: bool = Field(
+        default=True,
+        description="Whether to immediately dispatch an atomic click to the chosen plate",
+    )
+    timeout_seconds: float = Field(
+        default=8.0,
+        ge=0.1,
+        description="Maximum seconds to poll for active selection phase before timeout",
+    )
 
 
 ActionNode: TypeAlias = Annotated[
@@ -231,6 +304,10 @@ ActionNode: TypeAlias = Annotated[
         CvTriggerAction,
         CvMultiTriggerAction,
         LoopContainerAction,
+        SetVariableAction,
+        IfElseContainerAction,
+        FlowControlAction,
+        MiniGameSolverAction,
     ],
     Field(discriminator="action_type"),
 ]
@@ -250,4 +327,7 @@ class MacroSequence(BaseModel):
 CvBranchCase.model_rebuild()
 CvMultiTriggerAction.model_rebuild()
 LoopContainerAction.model_rebuild()
+IfElseContainerAction.model_rebuild()
+FlowControlAction.model_rebuild()
+MiniGameSolverAction.model_rebuild()
 MacroSequence.model_rebuild()

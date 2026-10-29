@@ -3,7 +3,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 from collections.abc import Callable
-from typing import Final, cast, override
+from typing import TYPE_CHECKING, Final, Protocol, cast, override
 
 import numpy as np
 
@@ -12,6 +12,7 @@ from src.core.types import FrameCaptureProtocol, ImageBuffer, Rect2D
 
 SRCCOPY: Final[int] = 0x00CC0020
 CAPTUREBLT: Final[int] = 0x40000000
+COLOR_BGRA2BGR: Final[int] = 1
 BI_RGB: Final[int] = 0
 DIB_RGB_COLORS: Final[int] = 0
 
@@ -21,6 +22,14 @@ SM_CXVIRTUALSCREEN: Final[int] = 78
 SM_CYVIRTUALSCREEN: Final[int] = 79
 SM_CXSCREEN: Final[int] = 0
 SM_CYSCREEN: Final[int] = 1
+
+if TYPE_CHECKING:
+    class _Cv2Protocol(Protocol):
+        def cvtColor(self, src: ImageBuffer, code: int) -> ImageBuffer: ...
+
+    cv2: _Cv2Protocol
+else:
+    import cv2
 
 
 class BITMAPINFOHEADER(ctypes.Structure):
@@ -188,43 +197,43 @@ class Win32GdiCapture(FrameCaptureProtocol):
         if width <= 0 or height <= 0:
             raise FrameCaptureError(f"Invalid capture dimensions: width={width}, height={height}")
 
-        # GetDC(0) acquires the unified virtual desktop DC spanning all monitors
         hdc_screen: int = _get_dc(0)
         if hdc_screen == 0:
             raise FrameCaptureError("Failed to acquire global virtual desktop device context (GetDC(0))")
 
-        hdc_mem: int = _create_compatible_dc(hdc_screen)
-        if hdc_mem == 0:
-            _ = _release_dc(0, hdc_screen)
-            raise FrameCaptureError("Failed to create compatible memory DC (CreateCompatibleDC)")
-
-        bmi = BITMAPINFO()
-        bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-        bmi.bmiHeader.biWidth = width
-        bmi.bmiHeader.biHeight = -height  # Top-down uncompressed DIB
-        bmi.bmiHeader.biPlanes = 1
-        bmi.bmiHeader.biBitCount = 32
-        bmi.bmiHeader.biCompression = BI_RGB
-        bmi.bmiHeader.biSizeImage = width * height * 4
-
-        bits_ptr = ctypes.c_void_p()
-        hbitmap: int = _create_dib_section(
-            hdc_mem,
-            ctypes.pointer(bmi),
-            DIB_RGB_COLORS,
-            ctypes.pointer(bits_ptr),
-            None,
-            0,
-        )
-
-        if hbitmap == 0 or bits_ptr.value is None:
-            _ = _delete_dc(hdc_mem)
-            _ = _release_dc(0, hdc_screen)
-            raise FrameCaptureError("Failed to allocate DIB section bitmap (CreateDIBSection)")
-
-        old_bmp: int = _select_object(hdc_mem, hbitmap)
+        hdc_mem: int = 0
+        hbitmap: int = 0
+        old_bmp: int = 0
 
         try:
+            hdc_mem = _create_compatible_dc(hdc_screen)
+            if hdc_mem == 0:
+                raise FrameCaptureError("Failed to create compatible memory DC (CreateCompatibleDC)")
+
+            bmi = BITMAPINFO()
+            bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            bmi.bmiHeader.biWidth = width
+            bmi.bmiHeader.biHeight = -height  # Top-down uncompressed DIB
+            bmi.bmiHeader.biPlanes = 1
+            bmi.bmiHeader.biBitCount = 32
+            bmi.bmiHeader.biCompression = BI_RGB
+            bmi.bmiHeader.biSizeImage = width * height * 4
+
+            bits_ptr = ctypes.c_void_p()
+            hbitmap = _create_dib_section(
+                hdc_mem,
+                ctypes.pointer(bmi),
+                DIB_RGB_COLORS,
+                ctypes.pointer(bits_ptr),
+                None,
+                0,
+            )
+
+            if hbitmap == 0 or bits_ptr.value is None:
+                raise FrameCaptureError("Failed to allocate DIB section bitmap (CreateDIBSection)")
+
+            old_bmp = _select_object(hdc_mem, hbitmap)
+
             success: int = _bit_blt(
                 hdc_mem,
                 0,
@@ -244,11 +253,18 @@ class Win32GdiCapture(FrameCaptureProtocol):
             total_bytes: int = width * height * 4
             buffer_type = ctypes.c_uint8 * total_bytes
             raw_array = buffer_type.from_address(bits_ptr.value)
-            bgra_array = np.frombuffer(raw_array, dtype=np.uint8).reshape((height, width, 4))
-            bgr_array = np.ascontiguousarray(bgra_array[:, :, :3])
-            return cast(ImageBuffer, bgr_array)
+            bgra_array: ImageBuffer = cast(
+                ImageBuffer,
+                np.frombuffer(raw_array, dtype=np.uint8).reshape((height, width, 4)),
+            )
+            bgr_array: ImageBuffer = cv2.cvtColor(bgra_array, COLOR_BGRA2BGR)
+            return bgr_array
         finally:
-            _ = _select_object(hdc_mem, old_bmp)
-            _ = _delete_object(hbitmap)
-            _ = _delete_dc(hdc_mem)
-            _ = _release_dc(0, hdc_screen)
+            if hdc_mem != 0:
+                if old_bmp != 0:
+                    _ = _select_object(hdc_mem, old_bmp)
+                if hbitmap != 0:
+                    _ = _delete_object(hbitmap)
+                _ = _delete_dc(hdc_mem)
+            if hdc_screen != 0:
+                _ = _release_dc(0, hdc_screen)

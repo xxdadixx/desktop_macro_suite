@@ -1,4 +1,23 @@
 from enum import StrEnum, unique
+from typing import Final
+
+__all__: Final[list[str]] = [
+    "ActionType",
+    "ButtonState",
+    "CvFailurePolicy",
+    "CvMatchMode",
+    "CvMouseAction",
+    "CvSelectionStrategy",
+    "ExecutionState",
+    "FlowSignal",
+    "KeyState",
+    "LoopType",
+    "MouseButton",
+    "PlatePosition",
+    "RabbitSlot",
+    "TriggerComparison",
+    "VariableOp",
+]
 
 
 @unique
@@ -11,6 +30,43 @@ class ActionType(StrEnum):
     CV_TRIGGER = "cv_trigger"
     CV_MULTI_TRIGGER = "cv_multi_trigger"
     LOOP_CONTAINER = "loop_container"
+    SET_VARIABLE = "set_variable"
+    IF_ELSE_CONTAINER = "if_else_container"
+    FLOW_CONTROL = "flow_control"
+    MINIGAME_SOLVER = "minigame_solver"
+
+
+@unique
+class FlowSignal(StrEnum):
+    BREAK = "break"
+    CONTINUE = "continue"
+    ABORT = "abort"
+
+
+@unique
+class VariableOp(StrEnum):
+    ASSIGN = "assign"
+    INCREMENT = "increment"
+    DECREMENT = "decrement"
+    APPEND = "append"
+
+
+@unique
+class RabbitSlot(StrEnum):
+    AUTO = "auto"
+    TOP = "top"
+    LEFT = "left"
+    RIGHT = "right"
+    BOTTOM = "bottom"
+
+
+@unique
+class PlatePosition(StrEnum):
+    TOP_LEFT = "top_left"
+    TOP_RIGHT = "top_right"
+    CENTER = "center"
+    BOTTOM_LEFT = "bottom_left"
+    BOTTOM_RIGHT = "bottom_right"
 
 
 @unique
@@ -64,9 +120,9 @@ class ExecutionState(StrEnum):
 
 @unique
 class CvFailurePolicy(StrEnum):
-    ABORT = "abort"        # Assert / Gate: Raise MacroTimeoutError on failure
-    SKIP = "skip"          # If-Condition: Skip execution and continue smoothly
-    BREAK_LOOP = "break"   # Loop Control: Break enclosing loop if match fails
+    ABORT = "abort"
+    SKIP = "skip"
+    BREAK_LOOP = "break"
 
 
 @unique
@@ -80,10 +136,11 @@ class CvMouseAction(StrEnum):
 
 @unique
 class CvSelectionStrategy(StrEnum):
-    FIRST_MATCH = "first_match"          # Executes the first candidate exceeding threshold (priority order)
-    BEST_CONFIDENCE = "best_confidence"  # Evaluates all candidates and executes the highest match score
+    FIRST_MATCH = "first_match"
+    BEST_CONFIDENCE = "best_confidence"
+
 
 @unique
 class CvMatchMode(StrEnum):
-    STANDARD = "standard"  # Standard normalized grayscale cross-correlation
-    EDGE = "edge"          # Canny edge contour matching for semi-transparent/moving backgrounds
+    STANDARD = "standard"
+    EDGE = "edge"

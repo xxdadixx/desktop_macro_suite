@@ -44,12 +44,15 @@ class _QtLogHandler(logging.Handler):
             self.handleError(record)
 
 
-_GLOBAL_QT_LOG_BRIDGE: QtLogBridge = QtLogBridge()
+_global_qt_log_bridge: QtLogBridge | None = None
 
 
 def get_qt_log_bridge() -> QtLogBridge:
-    """Returns the global Qt log bridge instance for UI subscription."""
-    return _GLOBAL_QT_LOG_BRIDGE
+    """Returns the global Qt log bridge instance for UI subscription, creating lazily if needed."""
+    global _global_qt_log_bridge
+    if _global_qt_log_bridge is None:
+        _global_qt_log_bridge = QtLogBridge()
+    return _global_qt_log_bridge
 
 
 def setup_logging(
@@ -89,7 +92,8 @@ def setup_logging(
         root_logger.addHandler(file_handler)
 
     # 3. Qt Signal Handler for GUI Streaming
-    qt_handler = _QtLogHandler(_GLOBAL_QT_LOG_BRIDGE)
+    bridge: QtLogBridge = get_qt_log_bridge()
+    qt_handler = _QtLogHandler(bridge)
     qt_handler.setLevel(log_level)
     qt_handler.setFormatter(formatter)
     root_logger.addHandler(qt_handler)
@@ -98,4 +102,4 @@ def setup_logging(
         "Logging initialized at level %s.", logging.getLevelName(log_level)
     )
 
-    return _GLOBAL_QT_LOG_BRIDGE
+    return bridge

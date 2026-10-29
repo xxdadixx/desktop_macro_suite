@@ -14,29 +14,37 @@ from src.core.ast import (
     CvMultiTriggerAction,
     CvTriggerAction,
     DelayAction,
+    FlowControlAction,
+    IfElseContainerAction,
     KeyboardKeyAction,
     LoopContainerAction,
     MacroSequence,
+    MiniGameSolverAction,
     MouseButtonAction,
     MouseMoveAction,
     MouseScrollAction,
+    SetVariableAction,
 )
 from src.core.enums import (
     ButtonState,
     CvFailurePolicy,
     CvMouseAction,
+    FlowSignal,
     LoopType,
     MouseButton,
+    VariableOp,
 )
-from src.core.exceptions import ExecutionError, MacroTimeoutError
+from src.core.exceptions import ExecutionAbortedError, ExecutionError, MacroTimeoutError
 from src.core.types import (
     CancellationTokenProtocol,
     ExecutionTelemetryCallback,
     InputSynthesizerProtocol,
     Milliseconds,
 )
+from src.engine.evaluation import ExecutionContext, SafeExpressionEvaluator
 from src.engine.timing import PreciseTimer
 from src.vision.matcher import MatchResult
+from src.vision.minigame_solver import MooncakeGameSolver, SolvedMove
 from src.vision.trigger import VisualTriggerEvaluator
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -61,6 +69,10 @@ class _BreakLoopSignal(Exception):
     """Internal interpreter signal to break out of an active loop container."""
 
 
+class _ContinueLoopSignal(Exception):
+    """Internal interpreter signal to skip the remainder of the current loop iteration."""
+
+
 class MacroPlaybackEngine:
     """Executes MacroSequence AST nodes sequentially with sub-millisecond hardware dispatch, trace logging, and reentrancy safety."""
 
@@ -74,9 +86,16 @@ class MacroPlaybackEngine:
         self._token: CancellationTokenProtocol | None = cancellation_token
         self._visual_evaluator: VisualTriggerEvaluator | None = visual_evaluator
         self._execution_lock: threading.Lock = threading.Lock()
+        self._evaluator: SafeExpressionEvaluator = SafeExpressionEvaluator()
+        self._root_context: ExecutionContext = ExecutionContext()
         self._current_mouse_x: int = 0
         self._current_mouse_y: int = 0
         self._sync_cursor_position()
+
+    @property
+    def context(self) -> ExecutionContext:
+        """Exposes the active root execution context."""
+        return self._root_context
 
     @property
     def visual_evaluator(self) -> VisualTriggerEvaluator | None:
@@ -179,11 +198,14 @@ class MacroPlaybackEngine:
         self,
         node: ActionNode,
         telemetry_callback: ExecutionTelemetryCallback | None = None,
+        context: ExecutionContext | None = None,
     ) -> None:
         """Evaluates and dispatches a single AST action node exhaustively with trace logs."""
         self._check_cancellation()
         if not node.enabled:
             return
+
+        active_ctx: ExecutionContext = context if context is not None else self._root_context
 
         match node:
             case MouseMoveAction() as action:
@@ -197,11 +219,99 @@ class MacroPlaybackEngine:
             case DelayAction() as action:
                 self._execute_delay(action)
             case LoopContainerAction() as action:
-                self._execute_loop(action, telemetry_callback=telemetry_callback)
+                self._execute_loop(action, telemetry_callback=telemetry_callback, context=active_ctx)
+            case SetVariableAction() as action:
+                self._execute_set_variable(action, context=active_ctx)
+            case IfElseContainerAction() as action:
+                self._execute_if_else(action, telemetry_callback=telemetry_callback, context=active_ctx)
+            case FlowControlAction() as action:
+                self._execute_flow_control(action)
             case CvTriggerAction() as action:
                 self._execute_cv_trigger(action)
             case CvMultiTriggerAction() as action:
                 self._execute_cv_multi_trigger(action, telemetry_callback=telemetry_callback)
+            case MiniGameSolverAction() as action:
+                self._execute_minigame_solver(action, context=active_ctx)
+
+    def _execute_set_variable(
+        self,
+        action: SetVariableAction,
+        context: ExecutionContext,
+    ) -> None:
+        current_scope: dict[str, object] = context.to_dict()
+        evaluated_val: object = self._evaluator.evaluate(action.expression, current_scope)
+        existing_val: object = context.get(action.name)
+
+        final_val: object
+        match action.operation:
+            case VariableOp.ASSIGN:
+                final_val = evaluated_val
+            case VariableOp.INCREMENT:
+                base = float(existing_val) if isinstance(existing_val, (int, float)) else 0.0
+                inc = float(evaluated_val) if isinstance(evaluated_val, (int, float)) else 0.0
+                sum_val = base + inc
+                final_val = (
+                    sum_val
+                    if (isinstance(existing_val, float) or isinstance(evaluated_val, float))
+                    else int(sum_val)
+                )
+            case VariableOp.DECREMENT:
+                base = float(existing_val) if isinstance(existing_val, (int, float)) else 0.0
+                dec = float(evaluated_val) if isinstance(evaluated_val, (int, float)) else 0.0
+                diff_val = base - dec
+                final_val = (
+                    diff_val
+                    if (isinstance(existing_val, float) or isinstance(evaluated_val, float))
+                    else int(diff_val)
+                )
+            case VariableOp.APPEND:
+                base_str = str(existing_val) if existing_val is not None else ""
+                final_val = base_str + (str(evaluated_val) if evaluated_val is not None else "")
+
+        context.set(action.name, final_val)
+        logger.info(
+            "Variable '%s' updated: %r (Operation=%s)",
+            action.name,
+            final_val,
+            action.operation.value,
+        )
+
+    def _execute_if_else(
+        self,
+        action: IfElseContainerAction,
+        telemetry_callback: ExecutionTelemetryCallback | None,
+        context: ExecutionContext,
+    ) -> None:
+        current_scope: dict[str, object] = context.to_dict()
+        condition_passed = self._evaluator.evaluate_bool(action.condition, current_scope)
+
+        logger.info(
+            "Evaluating conditional block '%s': condition '%s' -> %s",
+            action.id[:8],
+            action.condition,
+            condition_passed,
+        )
+
+        branch_actions = action.then_actions if condition_passed else action.else_actions
+        branch_scope = context.create_child_scope()
+
+        for child in branch_actions:
+            self.execute_action(child, telemetry_callback=telemetry_callback, context=branch_scope)
+
+    def _execute_flow_control(self, action: FlowControlAction) -> None:
+        match action.signal:
+            case FlowSignal.BREAK:
+                logger.info("Executing FlowControl: BREAK enclosing loop.")
+                raise _BreakLoopSignal()
+            case FlowSignal.CONTINUE:
+                logger.info("Executing FlowControl: CONTINUE to next loop iteration.")
+                raise _ContinueLoopSignal()
+            case FlowSignal.ABORT:
+                reason: str = (
+                    action.reason if action.reason else "Execution aborted by FlowControl action"
+                )
+                logger.warning("Executing FlowControl: ABORT sequence (%s).", reason)
+                raise ExecutionAbortedError(reason)
 
     def _check_cancellation(self) -> None:
         if self._token is not None:
@@ -313,7 +423,9 @@ class MacroPlaybackEngine:
         self,
         action: LoopContainerAction,
         telemetry_callback: ExecutionTelemetryCallback | None = None,
+        context: ExecutionContext | None = None,
     ) -> None:
+        active_ctx: ExecutionContext = context if context is not None else self._root_context
         logger.info(
             "Entering Loop block '%s' (type=%s, child_actions=%d)",
             action.id[:8],
@@ -325,39 +437,73 @@ class MacroPlaybackEngine:
             case LoopType.COUNT:
                 for cycle in range(action.iterations):
                     self._check_cancellation()
+                    loop_scope = active_ctx.create_child_scope()
+                    loop_scope.set("loop_index", cycle)
+                    loop_scope.set("loop_iteration", cycle + 1)
+                    loop_scope.set("loop_first", cycle == 0)
+                    loop_scope.set("loop_last", cycle == action.iterations - 1)
+
                     logger.debug("Loop iteration [%d/%d]", cycle + 1, action.iterations)
                     try:
                         for child in action.actions:
-                            self._execute_action_with_telemetry(child, telemetry_callback)
+                            self.execute_action(
+                                child, telemetry_callback=telemetry_callback, context=loop_scope
+                            )
                     except _BreakLoopSignal:
                         logger.info("Loop break signal received. Exiting loop '%s'.", action.id[:8])
                         break
+                    except _ContinueLoopSignal:
+                        logger.debug("Loop continue signal received. Advancing to next iteration.")
+                        continue
 
             case LoopType.INFINITE:
                 cycle_count: int = 0
                 while True:
                     self._check_cancellation()
+                    loop_scope = active_ctx.create_child_scope()
+                    loop_scope.set("loop_index", cycle_count)
+                    loop_scope.set("loop_iteration", cycle_count + 1)
                     cycle_count += 1
+
                     logger.debug("Infinite loop cycle #%d", cycle_count)
                     try:
                         for child in action.actions:
-                            self._execute_action_with_telemetry(child, telemetry_callback)
+                            self.execute_action(
+                                child, telemetry_callback=telemetry_callback, context=loop_scope
+                            )
                     except _BreakLoopSignal:
-                        logger.info("Loop break signal received. Exiting infinite loop '%s'.", action.id[:8])
+                        logger.info(
+                            "Loop break signal received. Exiting infinite loop '%s'.", action.id[:8]
+                        )
                         break
+                    except _ContinueLoopSignal:
+                        logger.debug("Loop continue signal received. Advancing to next iteration.")
+                        continue
 
             case LoopType.DURATION:
                 start_epoch = time.monotonic()
                 deadline = start_epoch + action.duration_seconds
+                cycle_count = 0
                 logger.info("Starting timed duration loop (limit: %.1fs)", action.duration_seconds)
                 while time.monotonic() < deadline:
                     self._check_cancellation()
+                    loop_scope = active_ctx.create_child_scope()
+                    loop_scope.set("loop_index", cycle_count)
+                    loop_scope.set("loop_elapsed", round(time.monotonic() - start_epoch, 3))
+                    cycle_count += 1
                     try:
                         for child in action.actions:
-                            self._execute_action_with_telemetry(child, telemetry_callback)
+                            self.execute_action(
+                                child, telemetry_callback=telemetry_callback, context=loop_scope
+                            )
                     except _BreakLoopSignal:
-                        logger.info("Loop break signal received. Exiting duration loop '%s'.", action.id[:8])
+                        logger.info(
+                            "Loop break signal received. Exiting duration loop '%s'.", action.id[:8]
+                        )
                         break
+                    except _ContinueLoopSignal:
+                        logger.debug("Loop continue signal received. Advancing to next iteration.")
+                        continue
                     if not action.actions:
                         PreciseTimer.sleep_ms(1.0, self._token)
 
@@ -373,22 +519,37 @@ class MacroPlaybackEngine:
                     timeout_seconds=action.timeout_seconds,
                 )
                 start_time = time.monotonic()
+                cycle_count = 0
                 while True:
                     self._check_cancellation()
                     if (time.monotonic() - start_time) >= action.timeout_seconds:
-                        logger.warning("While-CV loop '%s' exceeded timeout limit of %.1fs.", action.id[:8], action.timeout_seconds)
+                        logger.warning(
+                            "While-CV loop '%s' exceeded timeout limit of %.1fs.",
+                            action.id[:8],
+                            action.timeout_seconds,
+                        )
                         raise MacroTimeoutError(action.id, action.timeout_seconds)
 
                     res = self._visual_evaluator.evaluate_once(cv_check)
                     if not res.found:
-                        logger.info("While-CV condition no longer matched. Terminating loop '%s'.", action.id[:8])
+                        logger.info(
+                            "While-CV condition no longer matched. Terminating loop '%s'.",
+                            action.id[:8],
+                        )
                         break
 
+                    loop_scope = active_ctx.create_child_scope()
+                    loop_scope.set("loop_index", cycle_count)
+                    cycle_count += 1
                     try:
                         for child in action.actions:
-                            self._execute_action_with_telemetry(child, telemetry_callback)
+                            self.execute_action(
+                                child, telemetry_callback=telemetry_callback, context=loop_scope
+                            )
                     except _BreakLoopSignal:
                         break
+                    except _ContinueLoopSignal:
+                        continue
 
                     if not action.actions:
                         PreciseTimer.sleep_ms(CV_POLL_INTERVAL_MS, self._token)
@@ -405,22 +566,40 @@ class MacroPlaybackEngine:
                     timeout_seconds=action.timeout_seconds,
                 )
                 start_time = time.monotonic()
+                cycle_count = 0
                 while True:
                     self._check_cancellation()
                     if (time.monotonic() - start_time) >= action.timeout_seconds:
-                        logger.warning("Until-CV loop '%s' exceeded timeout limit of %.1fs.", action.id[:8], action.timeout_seconds)
+                        logger.warning(
+                            "Until-CV loop '%s' exceeded timeout limit of %.1fs.",
+                            action.id[:8],
+                            action.timeout_seconds,
+                        )
                         raise MacroTimeoutError(action.id, action.timeout_seconds)
 
                     res = self._visual_evaluator.evaluate_once(cv_check)
                     if res.found:
-                        logger.info("Until-CV target detected (confidence=%.2f). Terminating loop '%s'.", res.confidence, action.id[:8])
+                        logger.info(
+                            "Until-CV target detected (confidence=%.2f). Terminating loop '%s'.",
+                            res.confidence,
+                            action.id[:8],
+                        )
                         break
 
+                    loop_scope = active_ctx.create_child_scope()
+                    loop_scope.set("loop_index", cycle_count)
+                    cycle_count += 1
                     try:
                         for child in action.actions:
-                            self._execute_action_with_telemetry(child, telemetry_callback)
+                            self.execute_action(
+                                child, telemetry_callback=telemetry_callback, context=loop_scope
+                            )
                     except _BreakLoopSignal:
+                        logger.info("Loop break signal received. Exiting loop '%s'.", action.id[:8])
                         break
+                    except _ContinueLoopSignal:
+                        logger.debug("Loop continue signal received. Advancing to next iteration.")
+                        continue
 
                     if not action.actions:
                         PreciseTimer.sleep_ms(CV_POLL_INTERVAL_MS, self._token)
@@ -434,7 +613,11 @@ class MacroPlaybackEngine:
                 "VisualTriggerEvaluator is not initialized or injected."
             )
 
-        target_desc: str = f"file='{action.template_path}'" if action.template_path else "in-memory embedded image"
+        target_desc: str = (
+            f"file='{action.template_path}'"
+            if action.template_path
+            else "in-memory embedded image"
+        )
         logger.info(
             "Evaluating visual condition [%s] (policy=%s, comparison=%s, mouse_action=%s, threshold=%.2f, timeout=%.1fs)",
             target_desc,
@@ -543,7 +726,11 @@ class MacroPlaybackEngine:
             )
 
         if matched_branch.actions:
-            logger.info("Executing %d child action(s) for branch '%s'.", len(matched_branch.actions), matched_branch.name)
+            logger.info(
+                "Executing %d child action(s) for branch '%s'.",
+                len(matched_branch.actions),
+                matched_branch.name,
+            )
             for child in matched_branch.actions:
                 self._execute_action_with_telemetry(child, telemetry_callback)
 
@@ -590,3 +777,64 @@ class MacroPlaybackEngine:
                 self._synthesizer.send_mouse_button(MouseButton.RIGHT, ButtonState.CLICK)
             case CvMouseAction.MOVE_ONLY:
                 logger.info("Cursor positioned at (%d, %d) [Move only]", target_x, target_y)
+
+    def _execute_minigame_solver(
+        self,
+        action: MiniGameSolverAction,
+        context: ExecutionContext,
+    ) -> None:
+        if self._visual_evaluator is None:
+            raise ExecutionError(
+                "Cannot execute MiniGameSolver: VisualTriggerEvaluator not initialized."
+            )
+
+        logger.info(
+            "Starting Mooncake Mini-Game solver (Player='%s', Slot='%s', AutoClick=%s)",
+            action.player_name,
+            action.player_slot.value,
+            action.auto_click,
+        )
+
+        solver = MooncakeGameSolver()
+        start_time: float = time.monotonic()
+        solved_move: SolvedMove | None = None
+
+        while (time.monotonic() - start_time) < action.timeout_seconds:
+            self._check_cancellation()
+            frame = self._visual_evaluator.capture_provider.capture()
+            move = solver.solve(frame=frame, player_slot=action.player_slot)
+
+            if move.is_selection_active:
+                solved_move = move
+                break
+
+            PreciseTimer.sleep_ms(CV_POLL_INTERVAL_MS, self._token)
+
+        if solved_move is None:
+            frame = self._visual_evaluator.capture_provider.capture()
+            solved_move = solver.solve(frame=frame, player_slot=action.player_slot)
+
+        chosen_cakes: int = solved_move.cake_counts.get(solved_move.chosen_plate, 0)
+        logger.info(
+            "Mooncake solver decision resolved: Slot='%s' -> Chosen Plate='%s' (%d Mooncakes). Counts: %s",
+            solved_move.player_slot.value.upper(),
+            solved_move.chosen_plate.value.upper(),
+            chosen_cakes,
+            {k.value: v for k, v in solved_move.cake_counts.items()},
+        )
+
+        context.set("minigame_player_slot", solved_move.player_slot.value)
+        context.set("minigame_chosen_plate", solved_move.chosen_plate.value)
+        context.set("minigame_cake_count", chosen_cakes)
+        context.set("minigame_target_x", solved_move.target_point.x)
+        context.set("minigame_target_y", solved_move.target_point.y)
+
+        if action.auto_click:
+            tx: int = solved_move.target_point.x
+            ty: int = solved_move.target_point.y
+            logger.info("Executing atomic click on chosen plate target: (%d, %d)", tx, ty)
+            self._synthesizer.send_mouse_move(tx, ty)
+            self._current_mouse_x = tx
+            self._current_mouse_y = ty
+            PreciseTimer.sleep_ms(25.0, self._token)
+            self._synthesizer.send_mouse_button(MouseButton.LEFT, ButtonState.CLICK)

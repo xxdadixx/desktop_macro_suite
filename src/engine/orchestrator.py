@@ -216,39 +216,39 @@ class MacroOrchestrator:
         on_error: Callable[[Exception], None] | None = None,
     ) -> threading.Thread:
         """Dispatches sequence playback in a dedicated background daemon thread with telemetry."""
-        def _worker() -> None:
-            with self._state_lock:
-                if self._is_playing:
-                    if on_error is not None:
-                        on_error(ExecutionError("Playback is already in progress"))
-                    return
-                if self._capture_engine.is_recording:
-                    if on_error is not None:
-                        on_error(ExecutionError("Cannot play sequence while input recording is active"))
-                    return
-                self._is_playing = True
+        with self._state_lock:
+            if self._is_playing:
+                raise ExecutionError("Playback is already in progress")
+            if self._capture_engine.is_recording:
+                raise ExecutionError("Cannot play sequence while input recording is active")
+            self._is_playing = True
 
+        self._cancellation_token.reset()
+
+        def _worker() -> None:
             logger.info("Playback background worker spawned for sequence '%s'.", sequence.name)
-            self._cancellation_token.reset()
+            playback_error: Exception | None = None
             try:
                 self._playback_engine.play(
                     sequence=sequence,
                     repeat_count=repeat_count,
                     telemetry_callback=telemetry_callback,
                 )
-                if on_complete is not None:
-                    on_complete()
             except ExecutionAbortedError as exc:
                 logger.info("Playback halted gracefully: %s", exc)
-                if on_error is not None:
-                    on_error(exc)
+                playback_error = exc
             except Exception as exc:
                 logger.error("Playback terminated with exception: %s", exc, exc_info=True)
-                if on_error is not None:
-                    on_error(exc)
+                playback_error = exc
             finally:
                 with self._state_lock:
                     self._is_playing = False
+
+                if playback_error is not None:
+                    if on_error is not None:
+                        on_error(playback_error)
+                elif on_complete is not None:
+                    on_complete()
 
         thread = threading.Thread(
             target=_worker,

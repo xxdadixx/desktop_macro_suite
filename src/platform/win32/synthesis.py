@@ -165,9 +165,11 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
             vw = _get_system_metrics(SM_CXSCREEN)
             vh = _get_system_metrics(SM_CYSCREEN)
 
-        # Scale coordinates across the virtual desktop using 16-bit fixed-point mapping
-        norm_x: int = max(0, min(65535, int(((x - vx) * 65536.0 / max(1, vw)) + 0.5)))
-        norm_y: int = max(0, min(65535, int(((y - vy) * 65536.0 / max(1, vh)) + 0.5)))
+        # Map discrete pixel range [0, dim - 1] to normalized range [0, 65535]
+        span_x: int = max(1, vw - 1)
+        span_y: int = max(1, vh - 1)
+        norm_x: int = max(0, min(65535, int(round(((x - vx) * 65535.0) / span_x))))
+        norm_y: int = max(0, min(65535, int(round(((y - vy) * 65535.0) / span_y))))
 
         event = INPUT()
         event.type = INPUT_MOUSE
@@ -223,6 +225,24 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
             case ButtonState.UP:
                 self._dispatch([create_event(up_flag, data)])
             case ButtonState.CLICK:
+                self._dispatch([
+                    create_event(down_flag, data),
+                    create_event(up_flag, data),
+                ])
+            case ButtonState.DOUBLE_CLICK:
+                self._dispatch([
+                    create_event(down_flag, data),
+                    create_event(up_flag, data),
+                    create_event(down_flag, data),
+                    create_event(up_flag, data),
+                ])
+
+        match state:
+            case ButtonState.DOWN:
+                self._dispatch([create_event(down_flag, data)])
+            case ButtonState.UP:
+                self._dispatch([create_event(up_flag, data)])
+            case ButtonState.CLICK:
                 self._dispatch([create_event(down_flag, data)])
                 self._dispatch([create_event(up_flag, data)])
             case ButtonState.DOUBLE_CLICK:
@@ -245,6 +265,7 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
         self._dispatch([event])
 
     @override
+    @override
     def send_keyboard_key(
         self,
         vk_code: int,
@@ -260,7 +281,6 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
         effective_scan: int = 0
         effective_vk: int = 0
 
-        # Preserve the extended-key flag from hardware hooks, AST metadata, or scan-code prefixes
         has_extended_prefix: bool = (scan_code & 0xFF00) == 0xE000 or (scan_code & 0xE000) == 0xE000
         if is_extended or has_extended_prefix:
             base_flags |= KEYEVENTF_EXTENDEDKEY
@@ -288,6 +308,7 @@ class Win32InputSynthesizer(InputSynthesizerProtocol):
             case KeyState.KEY_UP:
                 self._dispatch([create_key_event(base_flags | KEYEVENTF_KEYUP)])
             case KeyState.KEY_PRESS:
-                # Dispatch down and up with microsecond hardware separation
-                self._dispatch([create_key_event(base_flags)])
-                self._dispatch([create_key_event(base_flags | KEYEVENTF_KEYUP)])
+                self._dispatch([
+                    create_key_event(base_flags),
+                    create_key_event(base_flags | KEYEVENTF_KEYUP),
+                ])

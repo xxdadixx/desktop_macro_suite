@@ -411,6 +411,11 @@ class TimelineView(QWidget):
         self._btn_wrap_loop.setToolTip("Enclose selected actions in a loop container (Ctrl+L)")
         self._btn_wrap_loop.clicked.connect(self._on_wrap_loop)
 
+        self._btn_wrap_if: QPushButton = QPushButton("🔀 Wrap in If")
+        self._btn_wrap_if.setToolTip("Wrap selected actions in a conditional If block (Ctrl+I)")
+        self._btn_wrap_if.clicked.connect(self._on_wrap_if)
+        toolbar.addWidget(self._btn_wrap_if)
+
         self._btn_wrap_multi_cv: QPushButton = QPushButton("🔀 Wrap in Multi-CV")
         self._btn_wrap_multi_cv.setToolTip(
             "Wrap selected Action CVs into a parallel Multi-Target block (Ctrl+M)"
@@ -497,6 +502,7 @@ class TimelineView(QWidget):
         QShortcut(QKeySequence("Insert"), self, self._on_add_delay, context=ctx)
         QShortcut(QKeySequence("Alt+D"), self, self._on_add_delay, context=ctx)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.clear_selection, context=ctx)
+        QShortcut(QKeySequence("Ctrl+I"), self, self._on_wrap_if, context=ctx)
 
     def _on_wrap_multi_cv(self) -> None:
         rows = self.selected_rows()
@@ -691,3 +697,15 @@ class TimelineView(QWidget):
             self.select_row(next_row)
         else:
             self.action_selected.emit(-1)
+
+    def _on_wrap_if(self) -> None:
+        rows = self.selected_rows()
+        if not rows:
+            self.status_message_requested.emit("Select action(s) to wrap into an If condition.")
+            return
+
+        new_row = self._model.wrap_actions_in_if_else(rows)
+        self.select_row(new_row)
+        self.status_message_requested.emit(
+            f"Wrapped {len(rows)} action(s) into conditional block."
+        )

@@ -2,10 +2,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final
+from typing import Final, override
 
 from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QTextCursor
+from PySide6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QColor,
+    QFont,
+    QKeySequence,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QDockWidget,
@@ -26,11 +33,15 @@ from src.core.ast import (
     CvMultiTriggerAction,
     CvTriggerAction,
     DelayAction,
+    FlowControlAction,
+    IfElseContainerAction,
     KeyboardKeyAction,
     LoopContainerAction,
+    MiniGameSolverAction,
     MouseButtonAction,
     MouseMoveAction,
     MouseScrollAction,
+    SetVariableAction,
 )
 from src.core.enums import (
     CvFailurePolicy,
@@ -378,6 +389,10 @@ class MainWindow(QMainWindow):
                 CvTriggerAction,
                 CvMultiTriggerAction,
                 LoopContainerAction,
+                SetVariableAction,
+                IfElseContainerAction,
+                FlowControlAction,
+                MiniGameSolverAction,
             ),
         ):
             if self._model.update_action(row, updated):
@@ -388,6 +403,10 @@ class MainWindow(QMainWindow):
                 self._status_bar.showMessage(
                     f"Updated action #{new_row + 1 if new_row >= 0 else row + 1} ({updated.action_type.value})."
                 )
+        else:
+            self._status_bar.showMessage(
+                f"Action update rejected: Unsupported type '{type(updated).__name__}'."
+            )
 
     @Slot(int)
     def _on_action_selected(self, row: int) -> None:
@@ -407,6 +426,10 @@ class MainWindow(QMainWindow):
                 CvTriggerAction,
                 CvMultiTriggerAction,
                 LoopContainerAction,
+                SetVariableAction,
+                IfElseContainerAction,
+                FlowControlAction,
+                MiniGameSolverAction,
             ),
         ):
             selected_rows = self._timeline.selected_rows()
@@ -415,6 +438,10 @@ class MainWindow(QMainWindow):
             self._timeline.select_rows([new_row])
             self._inspector.inspect(new_row, action)
             self._status_bar.showMessage(f"Added {action.action_type.value} to sequence.")
+        else:
+            self._status_bar.showMessage(
+                f"Action creation rejected: Unsupported type '{type(action).__name__}'."
+            )
 
     @Slot()
     def _on_new(self) -> None:
@@ -594,3 +621,11 @@ class MainWindow(QMainWindow):
         self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    @override
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Ensures active playback and recording threads are aborted before window destruction."""
+        self._bridge.abort()
+        if self._bridge.is_recording:
+            _ = self._bridge.stop_recording()
+        super().closeEvent(event)

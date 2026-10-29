@@ -17,6 +17,7 @@ from src.core.ast import (
     CvBranchCase,
     CvMultiTriggerAction,
     CvTriggerAction,
+    IfElseContainerAction,
     LoopContainerAction,
     MacroSequence,
 )
@@ -159,8 +160,12 @@ class UIBridge(QObject):
                 if isinstance(node, LoopContainerAction):
                     _traverse(node.actions)
                 elif isinstance(node, CvMultiTriggerAction):
+                    _traverse(node.actions)
                     for b in node.branches:
                         _traverse(b.actions)
+                elif isinstance(node, IfElseContainerAction):
+                    _traverse(node.then_actions)
+                    _traverse(node.else_actions)
 
         _traverse(sequence.actions)
         total_steps: int = len(flat_action_order)
@@ -212,8 +217,9 @@ class UIBridge(QObject):
         action: CvMultiTriggerAction,
     ) -> tuple[CvBranchCase | None, MatchResult | None]:
         """Executes a one-shot multi-candidate match against the current screen snapshot."""
+        candidates = self._orchestrator.visual_evaluator.extract_candidate_branches(action)
         return self._orchestrator.visual_evaluator.evaluate_multi(
-            branches=action.branches,
+            branches=candidates,
             strategy=action.strategy,
         )
 

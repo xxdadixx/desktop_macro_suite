@@ -13,33 +13,33 @@ DEFAULT_ABORT_VK: Final[int] = 0x7B  # VK_F12
 
 
 class CancellationToken(CancellationTokenProtocol):
-    """Thread-safe cancellation token supporting cooperative execution halting."""
+    """Thread-safe cancellation token supporting cooperative execution halting with lock-free checks."""
 
     def __init__(self) -> None:
+        self._event: threading.Event = threading.Event()
         self._lock: threading.Lock = threading.Lock()
-        self._cancelled: bool = False
         self._reason: str = "Execution was cancelled"
 
     @override
     def is_cancelled(self) -> bool:
-        with self._lock:
-            return self._cancelled
+        return self._event.is_set()
 
     @override
     def raise_if_cancelled(self) -> None:
-        with self._lock:
-            if self._cancelled:
-                raise ExecutionAbortedError(self._reason)
+        if self._event.is_set():
+            with self._lock:
+                reason = self._reason
+            raise ExecutionAbortedError(reason)
 
     def cancel(self, reason: str = "Execution was cancelled") -> None:
         with self._lock:
-            self._cancelled = True
             self._reason = reason
+        self._event.set()
 
     def reset(self) -> None:
         with self._lock:
-            self._cancelled = False
             self._reason = "Execution was cancelled"
+        self._event.clear()
 
 
 class HardwareKillSwitch:

@@ -47,6 +47,11 @@ class VisualTriggerEvaluator:
     def matcher(self) -> TemplateMatcher:
         return self._matcher
 
+    @property
+    def capture_provider(self) -> FrameCaptureProtocol:
+        """Exposes the underlying desktop frame capture service."""
+        return self._capture
+
     def _adjust_match_coordinates(
         self,
         raw_match: MatchResult,
@@ -94,7 +99,7 @@ class VisualTriggerEvaluator:
                 reason="CvTriggerAction has neither 'template_path' nor 'image_base64' defined.",
             )
 
-        # Restrict screen capture to local search bounding box if padding is configured
+        # Preserve negative multi-monitor desktop coordinate space
         search_region: Rect2D | None = region
         if (
             search_region is None
@@ -106,8 +111,8 @@ class VisualTriggerEvaluator:
         ):
             pad: int = action.search_roi_padding
             search_region = Rect2D(
-                x=max(0, action.crop_x - pad),
-                y=max(0, action.crop_y - pad),
+                x=action.crop_x - pad,
+                y=action.crop_y - pad,
                 width=action.crop_width + (pad * 2),
                 height=action.crop_height + (pad * 2),
             )
@@ -154,6 +159,7 @@ class VisualTriggerEvaluator:
                     haystack=frame,
                     template=target,
                     threshold=branch.confidence_threshold,
+                    match_mode=branch.match_mode.value,
                 )
             except (FileNotFoundError, ValueError):
                 continue
@@ -206,7 +212,7 @@ class VisualTriggerEvaluator:
 
             PreciseTimer.sleep_ms(poll_interval_ms, cancellation_token)
 
-    def _extract_candidate_branches(
+    def extract_candidate_branches(
         self, action: CvMultiTriggerAction
     ) -> list[CvBranchCase]:
         """Extracts candidate visual branches from either action.actions or legacy action.branches."""
@@ -257,7 +263,7 @@ class VisualTriggerEvaluator:
         """Polls screen frames continuously until any candidate branch in the pool matches or timeout expires."""
         start_time: float = time.monotonic()
         timeout: float = action.timeout_seconds
-        candidates: list[CvBranchCase] = self._extract_candidate_branches(action)
+        candidates: list[CvBranchCase] = self.extract_candidate_branches(action)
 
         while True:
             if cancellation_token is not None:
@@ -277,3 +283,5 @@ class VisualTriggerEvaluator:
                 return None, None
 
             PreciseTimer.sleep_ms(poll_interval_ms, cancellation_token)
+
+    _extract_candidate_branches = extract_candidate_branches
